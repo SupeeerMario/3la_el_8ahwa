@@ -40,5 +40,8 @@ urlpatterns = [
     
     
     path('notifications/', include('notifications.urls')),
+
+
+    path("api-auth/", include("rest_framework.urls")),
     
 ]
