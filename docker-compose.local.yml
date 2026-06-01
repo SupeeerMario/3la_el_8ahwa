@@ -1,26 +1,32 @@
 services:
-  db:
+  db-local:
     image: postgres:17
     volumes:
       - postgres_data:/var/lib/postgresql/data
     env_file:
-      - .env.prod
+      - .env.local
+    environment:
+      POSTGRES_DB: ala_el_8ahwa
+      POSTGRES_USER: khaled
+      POSTGRES_PASSWORD: 123123
+    container_name: ala_el_8ahwa_db_local
 
-  django-web:
+  django-app-local:
     build: .
     user: root
-    container_name: django-docker
+    command: python manage.py runserver 0.0.0.0:8000 
     depends_on:
-      - db
+      - db-local
     volumes:
       - .:/app
       - ./static:/app/staticfiles
     env_file:
-      - .env.prod
+      - .env.local
     environment:
       - DJANGO_ENV=local
+    container_name: ala_el_8ahwa_app_local
 
-  frontend-proxy:
+  nginx-local:
     build:
       context: .
       dockerfile: nginx.dockerfile
@@ -29,7 +35,8 @@ services:
     volumes:
       - ./static:/static:ro
     depends_on:
-      - django-web
+      - django-app-local
+    container_name: ala_el_8ahwa_reverse_proxy_local
 
 volumes:
   postgres_data:

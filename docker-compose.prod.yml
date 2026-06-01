@@ -1,24 +1,26 @@
 services:
-  db:
+  db-prod:
     image: postgres:17
     volumes:
       - postgres_data:/var/lib/postgresql/data
     env_file:
       - .env.prod
+    container_name: ala_el_8ahwa_db_prod
 
-  django-web:
+
+  django-app-prod:
     build: .
-    container_name: django-docker
     depends_on:
-      - db
+      - db-prod
     volumes:
       - ./static:/app/staticfiles
     env_file:
       - .env.prod
     environment:
-      - DJANGO_ENV=production
+      - DJANGO_ENV=prod
+    container_name: ala_el_8ahwa_app_prod
 
-  frontend-proxy:
+  nginx-prod:
     build:
       context: .
       dockerfile: nginx.dockerfile
@@ -27,7 +29,9 @@ services:
     volumes:
       - ./static:/static:ro
     depends_on:
-      - django-web
+      - django-app-prod
+    container_name: ala_el_8ahwa_reverse_proxy_prod
+
 
 volumes:
   postgres_data:
