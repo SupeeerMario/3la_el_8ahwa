@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     'leaderboard',
     'notifications',
     "rest_framework",
+    'rest_framework.authtoken',
 
 ]
 
@@ -148,6 +149,9 @@ REST_FRAMEWORK = {
     # Use Django's standard `django.contrib.auth` permissions,
     # or allow read-only access for unauthenticated users.
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.DjangoModelPermissionsOrAnonReadOnly"
+        "rest_framework.permissions.DjangoModelPermissionsOrAnonReadOnly",        
+        'rest_framework.authentication.TokenAuthentication',
     ]
 }
+
+LOGIN_REDIRECT_URL = '/users/profile/'

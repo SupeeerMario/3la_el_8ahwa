@@ -5,11 +5,16 @@ from .models import User
 from .serializers import UserSeriailizer, UserRegisterSerializer, UserLoginSerializer
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, status
+from rest_framework.authtoken.models import Token
+from rest_framework.authentication import TokenAuthentication, SessionAuthentication
+
 
 # Create your views here.
 
 class UserViewSet(viewsets.ViewSet):
-
+    
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    
     @action(
             detail=False,
             methods=["POST"],
@@ -28,15 +33,20 @@ class UserViewSet(viewsets.ViewSet):
             methods=["POST"],
             permission_classes = [permissions.AllowAny]
     )
-    def login(self, requeset):
-        seriailizer = UserLoginSerializer(data= requeset.data)
+    def login(self, request):
+        
+        seriailizer = UserLoginSerializer(data= request.data)
         seriailizer.is_valid(raise_exception= True)
-
         user = seriailizer.validated_data["user"]
-
-        return Response({
-            "user": UserSeriailizer(user).data
-        })
+        if user:
+            token, created = Token.objects.get_or_create(user=user)
+            return Response({
+                "user": UserSeriailizer(user).data,
+                "token": token.key
+            })
+        
+        else:
+            return Response({'error': 'Invalid credentials'}, status=401)
 
 
 
@@ -95,4 +105,18 @@ class UserViewSet(viewsets.ViewSet):
         user = User.objects.all()
         return Response(UserSeriailizer(user, many = True).data)
     
+
+    @action(
+        detail=False,
+        methods=["GET"],
+        permission_classes = [permissions.IsAuthenticated]
+    )
+    def profile(self, request):
+        try:
+            return Response(UserSeriailizer(request.user).data)
+        except User.DoesNotExist:
+            return Response(
+                {"error":"User not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
