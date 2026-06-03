@@ -1,9 +1,8 @@
-from rest_framework import  permissions
+from rest_framework.permissions import IsAuthenticated, AllowAny  
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from .models import User
 from .serializers import UserSeriailizer, UserRegisterSerializer, UserLoginSerializer
-from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, status
 from rest_framework.authtoken.models import Token
 from rest_framework.authentication import TokenAuthentication, SessionAuthentication
@@ -18,20 +17,27 @@ class UserViewSet(viewsets.ViewSet):
     @action(
             detail=False,
             methods=["POST"],
-            permission_classes = [permissions.AllowAny]
+            permission_classes = [AllowAny],
+            authentication_classes = []
     )
     def register(self ,request):
         seriailizer = UserRegisterSerializer(data = request.data)
         seriailizer.is_valid(raise_exception=True)
         user = seriailizer.save()
-        return Response({"user":UserSeriailizer(user).data})
+        return Response({
+            'message':'User created successfully',
+            'user':UserSeriailizer(user).data,
+            },
+            status=status.HTTP_201_CREATED
+            )
 
 
 
     @action(
             detail=False,
             methods=["POST"],
-            permission_classes = [permissions.AllowAny]
+            permission_classes = [AllowAny],
+            authentication_classes = []
     )
     def login(self, request):
         
@@ -50,23 +56,17 @@ class UserViewSet(viewsets.ViewSet):
 
 
 
-
+    
     # can't update the password
     @action(
-            detail=True,
+            detail=False,
             methods=["PUT"],
-            permission_classes = [permissions.AllowAny]
+            permission_classes = [IsAuthenticated]
     )
-    def update_user(self, request, pk=None):
-        try:
-            user = User.objects.get(pk=pk)
-        except User.DoesNotExist:
-            return Response(
-                {"error":"user not found"},
-                status = status.HTTP_404_NOT_FOUND
-            )
+    def update_profile(self, request):
+        currnt_user = request.user
         serializer = UserSeriailizer(
-            instance = user,
+            instance = currnt_user,
             data = request.data,
             partial = True
         )
@@ -75,48 +75,27 @@ class UserViewSet(viewsets.ViewSet):
         return Response(serializer.data)
 
 
+
+
+    
     @action(
-            detail=True,
+            detail=False,
             methods=["DELETE"],
-            permission_classes=[permissions.AllowAny]
+            permission_classes=[IsAuthenticated]
     )
-    def delete(self, request, pk=None):
-        try:
-            user = User.objects.get(pk=pk)
-        except User.DoesNotExist:
-            return Response(
-                {"error":"user not found"},
-                status= status.HTTP_404_NOT_FOUND
-            )
-        user.delete()
+    def delete_profile(self, request):
+        current_user = request.user
+        current_user.delete()
         return Response(
-            {"message": "User deleted successfully"},
-            status=status.HTTP_204_NO_CONTENT
+            {"message": "Your account has been deleted successfully"},
+            status=status.HTTP_200_OK
         )
 
 
-
     @action(
         detail=False,
         methods=["GET"],
-        permission_classes = [permissions.AllowAny]
+        permission_classes = [IsAuthenticated]
     )
-    def get_uesrs(self, request):
-        user = User.objects.all()
-        return Response(UserSeriailizer(user, many = True).data)
-    
-
-    @action(
-        detail=False,
-        methods=["GET"],
-        permission_classes = [permissions.IsAuthenticated]
-    )
-    def profile(self, request):
-        try:
-            return Response(UserSeriailizer(request.user).data)
-        except User.DoesNotExist:
-            return Response(
-                {"error":"User not found"},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
+    def get_profile(self, request):
+        return Response(UserSeriailizer(request.user).data)
