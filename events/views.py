@@ -32,7 +32,7 @@ class EventViewSet(ModelViewSet):
     def perform_create(self, serializer, pk=None):
         group_id = self.request.data.get('group_id')
         current_user = self.request.user
-        
+
         is_member =  GroupMember.objects.filter(
             user = current_user,
             group=group_id
@@ -50,3 +50,35 @@ class EventViewSet(ModelViewSet):
             {'message':'Event created successfully', 'event':serializer.data},
             status=status.HTTP_201_CREATED
         )
+    
+
+    ## make it that after 1 check-in the event can't be deleted
+    def destroy(self, request, *args, **kwargs):
+        event = self.get_object()
+        current_user = request.user
+
+        if event.created_by != request.user:
+            return Response(
+                {'error':'Only the event creator can delete this event'}
+            ) 
+        
+        event.delete()
+        return Response(
+            {'messange':'Event deleted successfully'},
+            status=status.HTTP_200_OK
+        )
+    
+
+    ## make it that after 1 check-in the event can't be updated
+    def update(self, request, *args, **kwargs):
+        event = self.get_object()
+        current_user = request.user
+
+
+        if event.created_by != current_user:
+            return Response(
+                {'error':'Only the event creator can update this event'},
+                status=status.HTTP_200_OK
+            )
+        
+        return super().update(request, *args, **kwargs)
