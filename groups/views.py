@@ -336,3 +336,103 @@ class GroupInvitationViewSet(ModelViewSet):
              },
             status=status.HTTP_201_CREATED,
         )
+    
+
+    
+
+
+
+
+    @action(
+        detail=True,
+        methods=['POST'],
+        permission_classes = [IsAuthenticated]
+    )
+    def invite_responce(self, request, pk=None):
+        invite_action = request.data.get('action')
+
+
+        if invite_action not in ['accept', 'reject']:
+            return Response(
+                {'error':'Invalid action, must be accepted or rejected'},
+                status= status.HTTP_400_BAD_REQUEST
+            )
+        
+
+        if invite_action == 'accept':
+            return self.accept_invite(request, pk)
+        
+        else:
+            return self.decline_invite(request, pk)
+
+
+        
+        
+
+
+
+
+
+    @action(
+        detail=True,
+        methods=['POST'],
+        permission_classes = [IsAuthenticated]
+    )
+    def accept_invite(self, request, pk=None):
+        current_user = request.user
+
+        try:
+            invitaion = GroupInvitaion.objects.get(pk=pk, invited_user = current_user, status = 'pending')
+        
+        except GroupInvitaion.DoesNotExist:
+
+            return Response(
+                {'error':'pending invitaion not found, or you are not authiriozed to repond'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        invitaion.status = 'accepted'
+        invitaion.save()
+
+        GroupMember.objects.get_or_create(
+            user = request.user,
+            group = invitaion.group,
+            defaults={'role':'member'}
+        )
+
+        invitaion.delete()
+
+        return Response(
+            {'message':f'Sucessfully joined {invitaion.group.name}'},
+            status=status.HTTP_200_OK
+        )
+
+
+
+
+    @action(
+    detail=True,
+    methods=['POST'],
+    permission_classes = [IsAuthenticated]
+    )
+    def decline_invite(self, request, pk=None):
+        current_user = request.user
+
+        try:
+            invitaion = GroupInvitaion.objects.get(pk=pk, invited_user = current_user, status = 'pending')
+        
+        except GroupInvitaion.DoesNotExist:
+
+            return Response(
+                {'error':'pending invitaion not found, or you are not authiriozed to repond'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        invitaion.status = 'rejected'
+        invitaion.save()
+
+        return Response(
+            {'message':'invitaion declined sucessfully'},
+            status=status.HTTP_200_OK
+        )
+        
