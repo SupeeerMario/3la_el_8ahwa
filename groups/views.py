@@ -2,12 +2,13 @@ from django.shortcuts import render
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 from .models import Group, GroupMember,GroupInvitaion
-from .serializers import GroupSerializer, GroupMemberSerializer
+from .serializers import GroupSerializer, GroupMemberSerializer, GroupInvitaionSerializer
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.authentication import TokenAuthentication
 from rest_framework import status
 from django.db.models import Count
+from django.contrib.auth import get_user_model
 # Create your views here.
 
 
@@ -17,7 +18,7 @@ class GroupsViewSet(ModelViewSet):
     authentication_classes = [TokenAuthentication]
 
     def get_queryset(self):
-        return Group.objects.annotate(members_count = Count('members'))
+        return Group.objects.annotate(members_count = Count('group'))
 
 
     @action(
@@ -238,10 +239,100 @@ class GroupsViewSet(ModelViewSet):
 
 
 
+
+
+class GroupInvitationViewSet(ModelViewSet):
+
+
+    serializer_class = GroupInvitaionSerializer
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication]
+
+
     @action(
-        detail=True,
+            detail=False,
+            methods=['GET'],
+            permission_classes = [IsAuthenticated]
+    )
+    def show_all_invitations(self,request):
+        current_user = request.user
+        invitaitons  = GroupInvitaion.objects.filter(invited_user = current_user)
+        serializer = GroupInvitaionSerializer(invitaitons, many = True)
+        return Response(
+            {'message':'here are all your invites',
+            'invites': serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+    @action(
+        detail=False,
         methods=['POST'],
         permission_classes = [IsAuthenticated]
     )
-    def send_invite(self, request, pk=None):
-        pass
+    def send_invite(self, request):
+        current_user = request.user
+        group_id = request.data.get('group_id')
+        username_to_invite = request.data.get('username_to_invite')
+
+        try:
+            group = Group.objects.get(id = group_id)
+        except Group.DoesNotExist:
+            return Response(
+                {'error':'Group not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        is_admin = GroupMember.objects.filter(user = current_user, group = group, role = 'admin').exists()
+
+        if not is_admin:
+            return Response(
+                {'error':'only admins can send invites'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+
+        user_model = get_user_model()
+
+        try:
+            invited_user = user_model.objects.get(username = username_to_invite)
+        
+        except user_model.DoesNotExist:
+            return Response(
+                {'error':f'{username_to_invite} not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        if GroupMember.objects.filter(user = invited_user, group = group).exists():
+            return Response(
+                {'error':f'{username_to_invite} is already a member of this group'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+
+        invitaion, created = GroupInvitaion.objects.get_or_create(
+            group=group,
+            invited_user=invited_user,
+            defaults={'invited_by':current_user, 'status':'pending'}
+        )
+
+        if not created:
+            if invitaion.status == 'pending':
+                return Response(
+                    {'error':'An invitaion is already pending'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            invitaion.status = 'pending'
+            invitaion.invited_by = current_user
+            invitaion.save()
+
+        serializer = GroupInvitaionSerializer(invitaion)
+
+        return Response(
+            {'message':f'invitaion sent to {username_to_invite} sucessfully',
+             'invites': serializer.data
+             },
+            status=status.HTTP_201_CREATED,
+        )
