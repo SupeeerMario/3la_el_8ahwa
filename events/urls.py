@@ -1,6 +1,11 @@
 from django.urls import path
-from . import views
+from .views import EventViewSet 
+from rest_framework.routers import DefaultRouter
 
-urlpatterns = [
-    
-]
+
+router = DefaultRouter()
+
+router.register(r'', EventViewSet, basename='event')
+
+
+urlpatterns = router.urls

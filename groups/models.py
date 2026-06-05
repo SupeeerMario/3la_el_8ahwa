@@ -27,7 +27,7 @@ class GroupMember(models.Model):
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="group_members")
 
-    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="group")
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="members")
 
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default="member")
 

@@ -22,6 +22,12 @@ class Event(models.Model):
 
     class Meta:
         ordering = ["start_time"]
+        constraints = [
+            models.UniqueConstraint(
+                fields = ['created_by', 'title', 'latitude', 'longitude'],
+                name = 'unique_event_per_user'
+            )
+        ]
 
 
     def __str__(self):

@@ -18,7 +18,7 @@ class GroupsViewSet(ModelViewSet):
     authentication_classes = [TokenAuthentication]
 
     def get_queryset(self):
-        return Group.objects.annotate(members_count = Count('group'))
+        return Group.objects.annotate(members_count = Count('members'))
 
 
     @action(
@@ -35,11 +35,6 @@ class GroupsViewSet(ModelViewSet):
 
 
 
-    @action(
-            detail=False,
-            methods=['POST'],
-            permission_classes=[IsAuthenticated]
-    )
     def perform_create(self, request):
         
         serializer = self.get_serializer(data = request.data)
@@ -56,40 +51,6 @@ class GroupsViewSet(ModelViewSet):
 
 
 
-    @action(
-        detail=True,
-        methods=['POST'],
-        permission_classes=[IsAuthenticated]
-    )
-    def join_group(self, request, pk = None):
-        current_user = request.user
-
-        try:
-            group = Group.objects.get(pk=pk)
-
-        except Group.DoesNotExist:
-            return Response(
-                {'error':'Group not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        member, created = GroupMember.objects.get_or_create(
-            user = current_user,
-            group = group,
-            defaults= {'role':'member'}
-        )
-
-        if not created:
-            return Response(
-                {'error':"You are already a membre of this group"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        return Response(
-            {'messege':f'Successfully joined group {group.name}'},
-            status=status.HTTP_201_CREATED
-        )
-        
     # make it that if owner leaves the role is transfered to the latest entry
     #if the last member leaves the group the group gets deleted
     @action(
