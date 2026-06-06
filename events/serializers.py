@@ -13,9 +13,11 @@ class EventSerializer(serializers.ModelSerializer):
             'radius_meters',
             'start_time',
             'end_time',
-            'created_at'
+            'created_at',
+            'active',
+            'finished'
         ]
-    read_only_field = ['created_at']
+    read_only_fields = ['created_at', 'active','finished' ]
 
 
     def validate_latitude(self, value):
@@ -41,6 +43,8 @@ class EventDetailSerializer(serializers.ModelSerializer):
             'start_time',
             'end_time',
             'created_at',
+            'active',
+            'finished',
             'created_by',
             'group'
         ]

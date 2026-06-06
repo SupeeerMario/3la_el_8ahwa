@@ -1,6 +1,7 @@
 from django.db import models
 from django.conf import settings
 from groups.models import Group
+from django.utils import timezone
 
 # Create your models here.
 
@@ -19,6 +20,16 @@ class Event(models.Model):
     end_time = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add = True)
 
+
+    @property
+    def active(self):
+        now = timezone.now()
+        return self.start_time <= now <= self.end_time
+    
+    @property
+    def finished(self):
+        now = timezone.now()
+        return self.end_time < now
 
     class Meta:
         ordering = ["start_time"]

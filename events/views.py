@@ -24,14 +24,15 @@ class EventViewSet(ModelViewSet):
     
 
     def get_serializer_class(self):
-        if self.action in ['list', 'retrive']:
+        if self.action in ['list', 'retrieve']:
             return EventDetailSerializer
         return EventSerializer
     
 
-    def perform_create(self, serializer, pk=None):
+    def perform_create(self, serializer):
         group_id = self.request.data.get('group_id')
         current_user = self.request.user
+        
 
         is_member =  GroupMember.objects.filter(
             user = current_user,
@@ -41,6 +42,8 @@ class EventViewSet(ModelViewSet):
         if not is_member:
             return PermissionDenied('You are not a member of this group')
         
+        
+
         serializer = self.get_serializer(data = self.request.data)
         serializer.is_valid(raise_exception = True)
         serializer.save(created_by = current_user, group_id = group_id)
@@ -59,12 +62,13 @@ class EventViewSet(ModelViewSet):
 
         if event.created_by != request.user:
             return Response(
-                {'error':'Only the event creator can delete this event'}
+                {'error':'Only the event creator can delete this event'},
+                status=status.HTTP_403_FORBIDDEN
             ) 
         
         event.delete()
         return Response(
-            {'messange':'Event deleted successfully'},
+            {'message':'Event deleted successfully'},
             status=status.HTTP_200_OK
         )
     
@@ -78,7 +82,11 @@ class EventViewSet(ModelViewSet):
         if event.created_by != current_user:
             return Response(
                 {'error':'Only the event creator can update this event'},
-                status=status.HTTP_200_OK
+                status=status.HTTP_403_FORBIDDEN
             )
         
         return super().update(request, *args, **kwargs)
+    
+
+
+    
