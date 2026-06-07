@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Event
+from django.utils import timezone
 
 
 class EventSerializer(serializers.ModelSerializer):
@@ -26,6 +27,25 @@ class EventSerializer(serializers.ModelSerializer):
 
     def validate_longitude(self, value):
         return round(value, 4)
+    
+    def validate_start_time(self, value):
+        if value < timezone.now():
+            raise serializers.ValidationError('Start time cannot be in the past')
+        return value
+
+    def validate_end_time(self,value):
+        if value < timezone.now():
+            raise serializers.ValidationError('End time cannot be in the past')
+        return value
+        
+    def validate(self, data):
+        start_time = data.get('start_time')
+        end_time = data.get('end_time')
+
+        if end_time <= start_time:
+            raise serializers.ValidationError('End time must be after start time')
+        
+        return data
 
 class EventDetailSerializer(serializers.ModelSerializer):
 

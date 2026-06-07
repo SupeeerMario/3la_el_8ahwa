@@ -28,10 +28,10 @@ class EventViewSet(ModelViewSet):
             return EventDetailSerializer
         return EventSerializer
     
-
-    def perform_create(self, serializer):
-        group_id = self.request.data.get('group_id')
-        current_user = self.request.user
+    ## make it so i can't create events in the past,,,,, make it so there can be multible places and member can vote for a place
+    def create(self, request, *args, **kwargs):
+        group_id = request.data.get('group_id')
+        current_user = request.user
         
 
         is_member =  GroupMember.objects.filter(
@@ -40,11 +40,10 @@ class EventViewSet(ModelViewSet):
         ).exists()
 
         if not is_member:
-            return PermissionDenied('You are not a member of this group')
+            raise PermissionDenied('You are not a member of this group')
         
         
-
-        serializer = self.get_serializer(data = self.request.data)
+        serializer = self.get_serializer(data = request.data)
         serializer.is_valid(raise_exception = True)
         serializer.save(created_by = current_user, group_id = group_id)
 
@@ -55,7 +54,7 @@ class EventViewSet(ModelViewSet):
         )
     
 
-    ## make it that after 1 check-in the event can't be deleted
+    ## make it that before the event start time by 30 min it can't be deleted
     def destroy(self, request, *args, **kwargs):
         event = self.get_object()
         current_user = request.user
@@ -73,7 +72,7 @@ class EventViewSet(ModelViewSet):
         )
     
 
-    ## make it that after 1 check-in the event can't be updated
+    ##  make it that before the event start time by 30 min it can't be deleted
     def update(self, request, *args, **kwargs):
         event = self.get_object()
         current_user = request.user
