@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Event
+from .models import Event, EventLocation, LocationVote
 from django.utils import timezone
 
 
@@ -9,9 +9,7 @@ class EventSerializer(serializers.ModelSerializer):
         fields = [
             'title',
             'text',
-            'latitude',
-            'longitude',
-            'radius_meters',
+            'winning_location'
             'start_time',
             'end_time',
             'created_at',
@@ -21,12 +19,6 @@ class EventSerializer(serializers.ModelSerializer):
     read_only_fields = ['created_at', 'active','finished' ]
 
 
-    def validate_latitude(self, value):
-        return round(value, 4)
-    
-
-    def validate_longitude(self, value):
-        return round(value, 4)
     
     def validate_start_time(self, value):
         if value < timezone.now():
@@ -57,9 +49,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
             'id',
             'title',
             'text',
-            'latitude',
-            'longitude',
-            'radius_meters',
+            'winning_location'
             'start_time',
             'end_time',
             'created_at',
@@ -68,3 +58,49 @@ class EventDetailSerializer(serializers.ModelSerializer):
             'created_by',
             'group'
         ]
+
+
+class EventLoctionsSerializer(serializers.ModelSerializer):
+    model = EventLocation
+    fields = [
+        'id',
+        'name',
+        'latitude',
+        'longitude',
+        'created_at'
+    ]
+    read_only_fields = ['created_at']
+
+
+class EventLoctionsDetailsSerializer(serializers.ModelSerializer):
+    proposed_by = serializers.StringRelatedField()
+    voted_by = serializers.SerializerMethodField()
+
+    model = EventLocation
+    fields = [
+        'id',
+        'name',
+        'latitude',
+        'longitude',
+        'proposed_by',
+        'vote_by',
+        'created_at'
+    ]
+    read_only_fields = ['created_at']
+
+    def get_vote_count(self, obj):
+        return obj.votes.count()
+    
+
+
+class LocationVoteSerializer(serializers.ModelSerializer):
+
+    model = LocationVote
+    fields = [
+        'id',
+        'location',
+        'voted_by',
+        'created_at'
+    ]
+
+    read_only_fields = ['created_at', 'voted_by']
