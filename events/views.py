@@ -28,7 +28,7 @@ class EventViewSet(ModelViewSet):
             return EventDetailSerializer
         return EventSerializer
     
-    ## make it so i can't create events in the past,,,,, make it so there can be multible places and member can vote for a place
+    ## make it so there can be multible places and member can vote for a place
     def create(self, request, *args, **kwargs):
         group_id = request.data.get('group_id')
         current_user = request.user

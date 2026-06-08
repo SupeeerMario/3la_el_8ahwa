@@ -13,9 +13,7 @@ class Event(models.Model):
     group = models.ForeignKey(Group, on_delete = models.CASCADE, related_name = "events")
     title = models.CharField(max_length = 100)
     text = models.TextField(blank = True)
-    latitude = models.FloatField()
-    longitude = models.FloatField()
-    radius_meters = models.IntegerField()
+    winning_location = models.ForeignKey('EventLocation', null=True, blank=True, on_delete=models.SET_NULL, related_name='won_events')
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add = True)
@@ -33,13 +31,31 @@ class Event(models.Model):
 
     class Meta:
         ordering = ["start_time"]
-        constraints = [
-            models.UniqueConstraint(
-                fields = ['created_by', 'title', 'latitude', 'longitude'],
-                name = 'unique_event_per_user'
-            )
-        ]
+
 
 
     def __str__(self):
         return f"{self.title} by {self.group} and it's created by {self.created_by}"
+    
+
+
+class EventLocation(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='locations')
+    proposed_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    name = models.CharField(max_length=100)
+    latitude = models.FloatField()
+    longitude = models.FloatField()
+    created_at = models.DateTimeField(auto_now_add = True)
+
+
+    def __str__(self):
+        return f'{self.proposed_by} proposed {self.name} as a location for {self.event.title}'
+
+
+
+class LocationVote(models.Model):
+    location = models.ForeignKey(EventLocation, on_delete=models.CASCADE, related_name='votes')
+    voted_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
