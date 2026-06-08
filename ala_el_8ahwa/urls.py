@@ -32,6 +32,8 @@ urlpatterns = [
     
     path('events/', include('events.urls')),
     
+    path('event-locations/', include('events.location_urls')),
+    
     
     path('groups/', include('groups.urls')),
     

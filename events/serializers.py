@@ -9,7 +9,7 @@ class EventSerializer(serializers.ModelSerializer):
         fields = [
             'title',
             'text',
-            'winning_location'
+            'winning_location',
             'start_time',
             'end_time',
             'created_at',
@@ -49,7 +49,7 @@ class EventDetailSerializer(serializers.ModelSerializer):
             'id',
             'title',
             'text',
-            'winning_location'
+            'winning_location',
             'start_time',
             'end_time',
             'created_at',
@@ -61,32 +61,34 @@ class EventDetailSerializer(serializers.ModelSerializer):
 
 
 class EventLoctionsSerializer(serializers.ModelSerializer):
-    model = EventLocation
-    fields = [
-        'id',
-        'name',
-        'latitude',
-        'longitude',
-        'created_at'
-    ]
-    read_only_fields = ['created_at']
+    class Meta:
+        model = EventLocation
+        fields = [
+            'id',
+            'name',
+            'latitude',
+            'longitude',
+            'created_at'
+        ]
+        read_only_fields = ['created_at']
 
 
 class EventLoctionsDetailsSerializer(serializers.ModelSerializer):
     proposed_by = serializers.StringRelatedField()
     voted_by = serializers.SerializerMethodField()
 
-    model = EventLocation
-    fields = [
-        'id',
-        'name',
-        'latitude',
-        'longitude',
-        'proposed_by',
-        'vote_by',
-        'created_at'
-    ]
-    read_only_fields = ['created_at']
+    class Meta:
+        model = EventLocation
+        fields = [
+            'id',
+            'name',
+            'latitude',
+            'longitude',
+            'proposed_by',
+            'vote_by',
+            'created_at'
+        ]
+        read_only_fields = ['created_at']
 
     def get_vote_count(self, obj):
         return obj.votes.count()
@@ -94,13 +96,14 @@ class EventLoctionsDetailsSerializer(serializers.ModelSerializer):
 
 
 class LocationVoteSerializer(serializers.ModelSerializer):
+    class Meta:
 
-    model = LocationVote
-    fields = [
-        'id',
-        'location',
-        'voted_by',
-        'created_at'
-    ]
-
-    read_only_fields = ['created_at', 'voted_by']
+        model = LocationVote
+        fields = [
+            'id',
+            'location',
+            'voted_by',
+            'created_at'
+        ]
+    
+        read_only_fields = ['created_at', 'voted_by']
