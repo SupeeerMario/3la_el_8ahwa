@@ -8,6 +8,7 @@ from .models import Event, EventLocation, LocationVote
 from .serializers import EventSerializer,EventDetailSerializer,EventLoctionsSerializer ,EventLoctionsDetailsSerializer, LocationVoteSerializer
 from groups.models import GroupMember
 from rest_framework.exceptions import PermissionDenied
+from core.permissions import IsEventCreator
 
 # Create your views here.
 
@@ -17,11 +18,19 @@ class EventViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [TokenAuthentication]
 
+    def get_permissions(self):
+        # Only the creator may edit or delete an event. Enforced on both the
+        # update and destroy routes (destroy was previously unguarded, letting
+        # any group member delete another member's event).
+        if self.action in ("update", "partial_update", "destroy"):
+            return [IsAuthenticated(), IsEventCreator()]
+        return [IsAuthenticated()]
+
     def get_queryset(self):
         return Event.objects.filter(
             group__members__user = self.request.user
         )
-    
+
 
     def get_serializer_class(self):
         if self.action in ['list', 'retrieve']:
@@ -54,41 +63,7 @@ class EventViewSet(ModelViewSet):
         )
     
 
-    ## make it that before the event start time by 30 min it can't be deleted
-    def destroy(self, request, *args, **kwargs):
-        event = self.get_object()
-        current_user = request.user
 
-        if event.created_by != request.user:
-            return Response(
-                {'error':'Only the event creator can delete this event'},
-                status=status.HTTP_403_FORBIDDEN
-            ) 
-        
-        event.delete()
-        return Response(
-            {'message':'Event deleted successfully'},
-            status=status.HTTP_200_OK
-        )
-    
-
-    ##  make it that before the event start time by 30 min it can't be deleted
-    def update(self, request, *args, **kwargs):
-        event = self.get_object()
-        current_user = request.user
-
-
-        if event.created_by != current_user:
-            return Response(
-                {'error':'Only the event creator can update this event'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        return super().update(request, *args, **kwargs)
-    
-
-
-    
 class EventLocationViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
     authentication_classes = [TokenAuthentication]

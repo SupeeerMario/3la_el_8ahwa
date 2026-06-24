@@ -9,6 +9,7 @@ from rest_framework.authentication import TokenAuthentication
 from rest_framework import status
 from django.db.models import Count
 from django.contrib.auth import get_user_model
+from core.permissions import IsGroupAdmin
 # Create your views here.
 
 
@@ -16,6 +17,14 @@ class GroupsViewSet(ModelViewSet):
     serializer_class = GroupSerializer
     permission_classes = [IsAuthenticated]
     authentication_classes = [TokenAuthentication]
+
+    def get_permissions(self):
+        # The default ModelViewSet update/destroy routes must enforce the same
+        # admin check as the custom update_group/delete_group actions, otherwise
+        # any authenticated user can edit or delete any group via PUT/DELETE.
+        if self.action in ("update", "partial_update", "destroy"):
+            return [IsAuthenticated(), IsGroupAdmin()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         return Group.objects.annotate(members_count = Count('members'))
