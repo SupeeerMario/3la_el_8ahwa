@@ -44,19 +44,12 @@ class GroupsViewSet(ModelViewSet):
 
 
 
-    def perform_create(self, request):
-        
-        serializer = self.get_serializer(data = request.data)
-
-        serializer.is_valid(raise_exception = True)
-
-        group = serializer.save(created_by = self.request.user)
-        GroupMember.objects.create(user = self.request.user, group = group, role = 'admin')
-
-        return Response(
-            {'message': f'Group is created sucessfully {serializer.data}'},
-            status=status.HTTP_201_CREATED
-        )
+    def perform_create(self, serializer):
+        # DRF calls perform_create(self, serializer) after validation; the
+        # previous signature (self, request) broke group creation entirely.
+        # Validation and the 201 response are handled by CreateModelMixin.
+        group = serializer.save(created_by=self.request.user)
+        GroupMember.objects.create(user=self.request.user, group=group, role="admin")
 
 
 
