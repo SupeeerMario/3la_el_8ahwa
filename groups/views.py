@@ -8,13 +8,18 @@ from rest_framework.decorators import action
 from rest_framework import status
 from django.db.models import Count
 from django.contrib.auth import get_user_model
+# Reusable object-level permission replacing the inline GroupMember role checks.
 from core.permissions import IsGroupAdmin
 # Create your views here.
 
 
+# authentication_classes was removed from this viewset: JWT auth is now the
+# global default (settings.REST_FRAMEWORK), so the per-view declaration (and its
+# TokenAuthentication import) was redundant.
 class GroupsViewSet(ModelViewSet):
     serializer_class = GroupSerializer
     permission_classes = [IsAuthenticated]
+
     def get_permissions(self):
         # The default ModelViewSet update/destroy routes must enforce the same
         # admin check as the custom update_group/delete_group actions, otherwise
@@ -201,6 +206,7 @@ class GroupsViewSet(ModelViewSet):
 
 
 
+# authentication_classes removed here too — inherits the global JWT default.
 class GroupInvitationViewSet(ModelViewSet):
 
 

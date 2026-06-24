@@ -7,18 +7,22 @@ from .models import Event, EventLocation, LocationVote
 from .serializers import EventSerializer,EventDetailSerializer,EventLoctionsSerializer ,EventLoctionsDetailsSerializer, LocationVoteSerializer
 from groups.models import GroupMember
 from rest_framework.exceptions import PermissionDenied
+# Reusable object-level permission replacing the old hand-rolled creator checks.
 from core.permissions import IsEventCreator
 
 # Create your views here.
 
-
+# authentication_classes was removed here: JWT auth is now the global default
+# (settings.REST_FRAMEWORK), so declaring it per-view is redundant.
 class EventViewSet(ModelViewSet):
 
     permission_classes = [IsAuthenticated]
+
     def get_permissions(self):
-        # Only the creator may edit or delete an event. Enforced on both the
-        # update and destroy routes (destroy was previously unguarded, letting
-        # any group member delete another member's event).
+        # Only the creator may edit or delete an event. This replaces both the
+        # manual `update` override (which duplicated this check) and the
+        # commented-out `destroy` override. destroy was previously unguarded,
+        # so any group member could delete another member's event.
         if self.action in ("update", "partial_update", "destroy"):
             return [IsAuthenticated(), IsEventCreator()]
         return [IsAuthenticated()]
@@ -61,6 +65,7 @@ class EventViewSet(ModelViewSet):
     
 
 
+# authentication_classes removed here too — inherits the global JWT default.
 class EventLocationViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
 

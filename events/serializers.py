@@ -76,6 +76,10 @@ class EventLoctionsSerializer(serializers.ModelSerializer):
 
 
 class EventLoctionsDetailsSerializer(serializers.ModelSerializer):
+    # This serializer used to raise on use: it listed a 'vote_by' field that
+    # didn't exist and declared `voted_by` with no get_voted_by method. Now it
+    # exposes two computed read-only fields backed by the methods below:
+    # vote_count (tally) and voted_by (usernames who voted).
     proposed_by = serializers.StringRelatedField()
     vote_count = serializers.SerializerMethodField()
     voted_by = serializers.SerializerMethodField()
