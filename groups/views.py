@@ -55,8 +55,6 @@ class GroupsViewSet(ModelViewSet):
 
 
 
-    # make it that if owner leaves the role is transfered to the latest entry
-    #if the last member leaves the group the group gets deleted
     @action(
         detail=True,
         methods=['Delete'],
@@ -73,7 +71,7 @@ class GroupsViewSet(ModelViewSet):
                 {'error':'Group not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         try:
             membreship = GroupMember.objects.get(user = current_user, group=group)
 
@@ -82,14 +80,40 @@ class GroupsViewSet(ModelViewSet):
                 {'error':'You are not a member of this group'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
+        was_admin = membreship.role == "admin"
         membreship.delete()
-        
+
+        # Owner-transfer gap fix: previously a member just left and an
+        # admin leaving could orphan the group (no admins, or an empty group
+        # that lingered forever).
+        remaining = GroupMember.objects.filter(group=group)
+
+        if not remaining.exists():
+            # Last member left -> remove the now-empty group entirely.
+            group_name = group.name
+            group.delete()
+            return Response(
+                {'message': f'You have left and {group_name} was deleted (no members remained)'},
+                status=status.HTTP_200_OK
+            )
+
+        # If the departing admin was the last admin, promote the most recently
+        # joined remaining member so the group always has at least one admin.
+        if was_admin and not remaining.filter(role="admin").exists():
+            new_admin = remaining.order_by("-joined_at", "-id").first()
+            new_admin.role = "admin"
+            new_admin.save(update_fields=["role"])
+            return Response(
+                {'message': f'You have left {group.name}; admin transferred to {new_admin.user}'},
+                status=status.HTTP_200_OK
+            )
+
         return Response(
             {'message':f'You have successfully left the gruop {group.name}'},
             status=status.HTTP_200_OK
         )
-        
+
 
     @action(
         detail=True,
