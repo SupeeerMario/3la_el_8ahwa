@@ -5,7 +5,6 @@ from .models import Group, GroupMember,GroupInvitaion
 from .serializers import GroupSerializer, GroupMemberSerializer, GroupInvitaionSerializer
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
-from rest_framework.authentication import TokenAuthentication
 from rest_framework import status
 from django.db.models import Count
 from django.contrib.auth import get_user_model
@@ -16,8 +15,6 @@ from core.permissions import IsGroupAdmin
 class GroupsViewSet(ModelViewSet):
     serializer_class = GroupSerializer
     permission_classes = [IsAuthenticated]
-    authentication_classes = [TokenAuthentication]
-
     def get_permissions(self):
         # The default ModelViewSet update/destroy routes must enforce the same
         # admin check as the custom update_group/delete_group actions, otherwise
@@ -209,8 +206,6 @@ class GroupInvitationViewSet(ModelViewSet):
 
     serializer_class = GroupInvitaionSerializer
     permission_classes = [IsAuthenticated]
-    authentication_classes = [TokenAuthentication]
-
 
     @action(
             detail=False,

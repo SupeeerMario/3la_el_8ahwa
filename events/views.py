@@ -1,6 +1,5 @@
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.authentication import TokenAuthentication
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status
@@ -16,8 +15,6 @@ from core.permissions import IsEventCreator
 class EventViewSet(ModelViewSet):
 
     permission_classes = [IsAuthenticated]
-    authentication_classes = [TokenAuthentication]
-
     def get_permissions(self):
         # Only the creator may edit or delete an event. Enforced on both the
         # update and destroy routes (destroy was previously unguarded, letting
@@ -66,8 +63,6 @@ class EventViewSet(ModelViewSet):
 
 class EventLocationViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
-    authentication_classes = [TokenAuthentication]
-
 
     def get_queryset(self):
         event_id = self.request.query_params.get('event')

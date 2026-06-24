@@ -4,16 +4,13 @@ from rest_framework.decorators import action
 from .models import User
 from .serializers import UserSeriailizer, UserRegisterSerializer, UserLoginSerializer
 from rest_framework import viewsets, status
-from rest_framework.authtoken.models import Token
-from rest_framework.authentication import TokenAuthentication, SessionAuthentication
+from rest_framework_simplejwt.tokens import RefreshToken
 
 
 # Create your views here.
 
 class UserViewSet(viewsets.ViewSet):
-    
-    authentication_classes = [TokenAuthentication, SessionAuthentication]
-    
+
     @action(
             detail=False,
             methods=["POST"],
@@ -44,15 +41,12 @@ class UserViewSet(viewsets.ViewSet):
         seriailizer = UserLoginSerializer(data= request.data)
         seriailizer.is_valid(raise_exception= True)
         user = seriailizer.validated_data["user"]
-        if user:
-            token, created = Token.objects.get_or_create(user=user)
-            return Response({
-                "user": UserSeriailizer(user).data,
-                "token": token.key
-            })
-        
-        else:
-            return Response({'error': 'Invalid credentials'}, status=401)
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            "user": UserSeriailizer(user).data,
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+        })
 
 
 
