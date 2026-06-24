@@ -124,3 +124,59 @@ class EventLocationSerializerTests(APITestCase):
         self.assertEqual(len(resp.data), 1)
         self.assertEqual(resp.data[0]["vote_count"], 1)
         self.assertIn("u", resp.data[0]["voted_by"])
+
+
+class EventLocationCreateTests(APITestCase):
+    """Covers the EventLocationViewSet.create proposal flow."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="proposer", password="pw12345678")
+        self.group = Group.objects.create(name="G", created_by=self.user)
+        GroupMember.objects.create(group=self.group, user=self.user, role="admin")
+
+    def _upcoming_event(self):
+        return Event.objects.create(
+            created_by=self.user, group=self.group, title="E",
+            start_time=_future(), end_time=_future(hours=2),
+        )
+
+    def _payload(self, event):
+        return {
+            "event_id": event.id,
+            "name": "Cafe",
+            "latitude": 1.0,
+            "longitude": 2.0,
+        }
+
+    def test_member_can_propose_location_for_upcoming_event(self):
+        event = self._upcoming_event()
+        self.client.force_authenticate(self.user)
+        resp = self.client.post("/event-locations/", self._payload(event))
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(
+            EventLocation.objects.filter(event=event, proposed_by=self.user).exists()
+        )
+
+    def test_non_member_cannot_propose_location(self):
+        event = self._upcoming_event()
+        outsider = User.objects.create_user(username="outsiderL", password="pw12345678")
+        self.client.force_authenticate(outsider)
+        resp = self.client.post("/event-locations/", self._payload(event))
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_cannot_propose_for_unknown_event(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.post("/event-locations/", {
+            "event_id": 999999, "name": "Cafe", "latitude": 1.0, "longitude": 2.0,
+        })
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_proposing_for_finished_event_is_closed(self):
+        past_event = Event.objects.create(
+            created_by=self.user, group=self.group, title="Done",
+            start_time=timezone.now() - timedelta(days=2),
+            end_time=timezone.now() - timedelta(days=1),
+        )
+        self.client.force_authenticate(self.user)
+        resp = self.client.post("/event-locations/", self._payload(past_event))
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)

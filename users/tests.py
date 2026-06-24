@@ -51,3 +51,30 @@ class UserAuthTests(APITestCase):
             resp.status_code,
             (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
         )
+
+
+class UserProfileTests(APITestCase):
+    """Covers the profile actions: get/update/delete."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="eve", email="eve@example.com", password="pw12345678",
+        )
+        self.client.force_authenticate(self.user)
+
+    def test_get_profile_returns_current_user(self):
+        resp = self.client.get("/users/get_profile/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["username"], "eve")
+        self.assertEqual(resp.data["email"], "eve@example.com")
+
+    def test_update_profile_changes_email(self):
+        resp = self.client.put("/users/update_profile/", {"email": "new@example.com"})
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "new@example.com")
+
+    def test_delete_profile_removes_account(self):
+        resp = self.client.delete("/users/delete_profile/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(User.objects.filter(username="eve").exists())
