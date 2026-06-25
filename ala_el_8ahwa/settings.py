@@ -11,6 +11,8 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 from pathlib import Path
+# timedelta is used to configure the SimpleJWT access/refresh token lifetimes below.
+from datetime import timedelta
 import os
 from dotenv import load_dotenv
 
@@ -56,7 +58,10 @@ INSTALLED_APPS = [
     'leaderboard',
     'notifications',
     "rest_framework",
-    'rest_framework.authtoken',
+    # Replaced 'rest_framework.authtoken' with SimpleJWT's blacklist app:
+    # we moved off stateful DB tokens to JWT, and token_blacklist lets refresh
+    # tokens be invalidated after rotation (see SIMPLE_JWT below).
+    'rest_framework_simplejwt.token_blacklist',
 
 ]
 
@@ -145,12 +150,29 @@ STATIC_URL = 'static/'
 STATIC_ROOT =  BASE_DIR / "staticfiles"
 
 
+# Previously an authentication class (TokenAuthentication) was wrongly listed
+# under DEFAULT_PERMISSION_CLASSES, which has no has_permission() and would
+# error on any view relying on the defaults. Split into the correct keys:
+# authentication identifies the user (JWT, plus session for the browsable API),
+# permission decides access (authenticated by default; public views opt out
+# with AllowAny).
 REST_FRAMEWORK = {
-    # Use Django's standard `django.contrib.auth` permissions,
-    # or allow read-only access for unauthenticated users.
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ],
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.DjangoModelPermissionsOrAnonReadOnly",        
-        'rest_framework.authentication.TokenAuthentication',
-    ]
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+}
+
+# JWT settings replacing the old non-expiring DRF tokens. Short-lived access
+# tokens limit the damage of a leak; rotation + blacklist on refresh means a
+# used refresh token can't be replayed.
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
 }
 

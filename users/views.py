@@ -4,16 +4,17 @@ from rest_framework.decorators import action
 from .models import User
 from .serializers import UserSeriailizer, UserRegisterSerializer, UserLoginSerializer
 from rest_framework import viewsets, status
-from rest_framework.authtoken.models import Token
-from rest_framework.authentication import TokenAuthentication, SessionAuthentication
+# Switched from rest_framework.authtoken.models.Token to SimpleJWT: login now
+# mints a JWT refresh/access pair instead of a stateful DB token.
+from rest_framework_simplejwt.tokens import RefreshToken
 
 
 # Create your views here.
 
+# The per-view authentication_classes was removed: authentication is now set
+# globally to JWT in settings.REST_FRAMEWORK, so the viewset inherits it.
 class UserViewSet(viewsets.ViewSet):
-    
-    authentication_classes = [TokenAuthentication, SessionAuthentication]
-    
+
     @action(
             detail=False,
             methods=["POST"],
@@ -44,15 +45,15 @@ class UserViewSet(viewsets.ViewSet):
         seriailizer = UserLoginSerializer(data= request.data)
         seriailizer.is_valid(raise_exception= True)
         user = seriailizer.validated_data["user"]
-        if user:
-            token, created = Token.objects.get_or_create(user=user)
-            return Response({
-                "user": UserSeriailizer(user).data,
-                "token": token.key
-            })
-        
-        else:
-            return Response({'error': 'Invalid credentials'}, status=401)
+        # The serializer already raises on invalid credentials, so the old
+        # `if user / else: return 401` branch was unreachable and was removed.
+        # Issue a JWT pair: short-lived access for requests, refresh to renew.
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            "user": UserSeriailizer(user).data,
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+        })
 
 
 

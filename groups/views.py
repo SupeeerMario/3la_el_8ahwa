@@ -5,17 +5,28 @@ from .models import Group, GroupMember,GroupInvitaion
 from .serializers import GroupSerializer, GroupMemberSerializer, GroupInvitaionSerializer
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
-from rest_framework.authentication import TokenAuthentication
 from rest_framework import status
 from django.db.models import Count
 from django.contrib.auth import get_user_model
+# Reusable object-level permission replacing the inline GroupMember role checks.
+from core.permissions import IsGroupAdmin
 # Create your views here.
 
 
+# authentication_classes was removed from this viewset: JWT auth is now the
+# global default (settings.REST_FRAMEWORK), so the per-view declaration (and its
+# TokenAuthentication import) was redundant.
 class GroupsViewSet(ModelViewSet):
     serializer_class = GroupSerializer
     permission_classes = [IsAuthenticated]
-    authentication_classes = [TokenAuthentication]
+
+    def get_permissions(self):
+        # The default ModelViewSet update/destroy routes must enforce the same
+        # admin check as the custom update_group/delete_group actions, otherwise
+        # any authenticated user can edit or delete any group via PUT/DELETE.
+        if self.action in ("update", "partial_update", "destroy"):
+            return [IsAuthenticated(), IsGroupAdmin()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         return Group.objects.annotate(members_count = Count('members'))
@@ -35,24 +46,15 @@ class GroupsViewSet(ModelViewSet):
 
 
 
-    def perform_create(self, request):
-        
-        serializer = self.get_serializer(data = request.data)
-
-        serializer.is_valid(raise_exception = True)
-
-        group = serializer.save(created_by = self.request.user)
-        GroupMember.objects.create(user = self.request.user, group = group, role = 'admin')
-
-        return Response(
-            {'message': f'Group is created sucessfully {serializer.data}'},
-            status=status.HTTP_201_CREATED
-        )
+    def perform_create(self, serializer):
+        # DRF calls perform_create(self, serializer) after validation; the
+        # previous signature (self, request) broke group creation entirely.
+        # Validation and the 201 response are handled by CreateModelMixin.
+        group = serializer.save(created_by=self.request.user)
+        GroupMember.objects.create(user=self.request.user, group=group, role="admin")
 
 
 
-    # make it that if owner leaves the role is transfered to the latest entry
-    #if the last member leaves the group the group gets deleted
     @action(
         detail=True,
         methods=['Delete'],
@@ -69,7 +71,7 @@ class GroupsViewSet(ModelViewSet):
                 {'error':'Group not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         try:
             membreship = GroupMember.objects.get(user = current_user, group=group)
 
@@ -78,14 +80,40 @@ class GroupsViewSet(ModelViewSet):
                 {'error':'You are not a member of this group'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
+        was_admin = membreship.role == "admin"
         membreship.delete()
-        
+
+        # Owner-transfer gap fix: previously a member just left and an
+        # admin leaving could orphan the group (no admins, or an empty group
+        # that lingered forever).
+        remaining = GroupMember.objects.filter(group=group)
+
+        if not remaining.exists():
+            # Last member left -> remove the now-empty group entirely.
+            group_name = group.name
+            group.delete()
+            return Response(
+                {'message': f'You have left and {group_name} was deleted (no members remained)'},
+                status=status.HTTP_200_OK
+            )
+
+        # If the departing admin was the last admin, promote the most recently
+        # joined remaining member so the group always has at least one admin.
+        if was_admin and not remaining.filter(role="admin").exists():
+            new_admin = remaining.order_by("-joined_at", "-id").first()
+            new_admin.role = "admin"
+            new_admin.save(update_fields=["role"])
+            return Response(
+                {'message': f'You have left {group.name}; admin transferred to {new_admin.user}'},
+                status=status.HTTP_200_OK
+            )
+
         return Response(
             {'message':f'You have successfully left the gruop {group.name}'},
             status=status.HTTP_200_OK
         )
-        
+
 
     @action(
         detail=True,
@@ -202,13 +230,12 @@ class GroupsViewSet(ModelViewSet):
 
 
 
+# authentication_classes removed here too — inherits the global JWT default.
 class GroupInvitationViewSet(ModelViewSet):
 
 
     serializer_class = GroupInvitaionSerializer
     permission_classes = [IsAuthenticated]
-    authentication_classes = [TokenAuthentication]
-
 
     @action(
             detail=False,

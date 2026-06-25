@@ -1,6 +1,5 @@
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.authentication import TokenAuthentication
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status
@@ -8,20 +7,31 @@ from .models import Event, EventLocation, LocationVote
 from .serializers import EventSerializer,EventDetailSerializer,EventLoctionsSerializer ,EventLoctionsDetailsSerializer, LocationVoteSerializer
 from groups.models import GroupMember
 from rest_framework.exceptions import PermissionDenied
+# Reusable object-level permission replacing the old hand-rolled creator checks.
+from core.permissions import IsEventCreator
 
 # Create your views here.
 
-
+# authentication_classes was removed here: JWT auth is now the global default
+# (settings.REST_FRAMEWORK), so declaring it per-view is redundant.
 class EventViewSet(ModelViewSet):
 
     permission_classes = [IsAuthenticated]
-    authentication_classes = [TokenAuthentication]
+
+    def get_permissions(self):
+        # Only the creator may edit or delete an event. This replaces both the
+        # manual `update` override (which duplicated this check) and the
+        # commented-out `destroy` override. destroy was previously unguarded,
+        # so any group member could delete another member's event.
+        if self.action in ("update", "partial_update", "destroy"):
+            return [IsAuthenticated(), IsEventCreator()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         return Event.objects.filter(
             group__members__user = self.request.user
         )
-    
+
 
     def get_serializer_class(self):
         if self.action in ['list', 'retrieve']:
@@ -54,45 +64,10 @@ class EventViewSet(ModelViewSet):
         )
     
 
-    ## make it that before the event start time by 30 min it can't be deleted
-    def destroy(self, request, *args, **kwargs):
-        event = self.get_object()
-        current_user = request.user
 
-        if event.created_by != request.user:
-            return Response(
-                {'error':'Only the event creator can delete this event'},
-                status=status.HTTP_403_FORBIDDEN
-            ) 
-        
-        event.delete()
-        return Response(
-            {'message':'Event deleted successfully'},
-            status=status.HTTP_200_OK
-        )
-    
-
-    ##  make it that before the event start time by 30 min it can't be deleted
-    def update(self, request, *args, **kwargs):
-        event = self.get_object()
-        current_user = request.user
-
-
-        if event.created_by != current_user:
-            return Response(
-                {'error':'Only the event creator can update this event'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        return super().update(request, *args, **kwargs)
-    
-
-
-    
+# authentication_classes removed here too — inherits the global JWT default.
 class EventLocationViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
-    authentication_classes = [TokenAuthentication]
-
 
     def get_queryset(self):
         event_id = self.request.query_params.get('event')
