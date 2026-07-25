@@ -30,22 +30,48 @@ class GroupAdminPermissionTests(APITestCase):
 
     def setUp(self):
         self.admin = User.objects.create_user(username="admin2", password="pw12345678")
+        self.member = User.objects.create_user(username="member2", password="pw12345678")
         self.outsider = User.objects.create_user(username="outsider", password="pw12345678")
         self.group = Group.objects.create(name="G", created_by=self.admin)
         GroupMember.objects.create(group=self.group, user=self.admin, role="admin")
+        GroupMember.objects.create(group=self.group, user=self.member, role="member")
 
-    def test_non_admin_cannot_update_group(self):
+    # A non-member gets 404, not 403: get_queryset() is scoped to the user's
+    # own groups, so the object never resolves and we don't leak its existence.
+    def test_non_member_cannot_update_group(self):
         self.client.force_authenticate(self.outsider)
+        resp = self.client.patch(f"/groups/{self.group.id}/", {"name": "Hacked"})
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.name, "G")
+
+    def test_non_member_cannot_delete_group(self):
+        self.client.force_authenticate(self.outsider)
+        resp = self.client.delete(f"/groups/{self.group.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(Group.objects.filter(id=self.group.id).exists())
+
+    # A member who isn't an admin is the realistic caller, and reaches
+    # IsGroupAdmin proper -> 403.
+    def test_non_admin_member_cannot_update_group(self):
+        self.client.force_authenticate(self.member)
         resp = self.client.patch(f"/groups/{self.group.id}/", {"name": "Hacked"})
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
         self.group.refresh_from_db()
         self.assertEqual(self.group.name, "G")
 
-    def test_non_admin_cannot_delete_group(self):
-        self.client.force_authenticate(self.outsider)
+    def test_non_admin_member_cannot_delete_group(self):
+        self.client.force_authenticate(self.member)
         resp = self.client.delete(f"/groups/{self.group.id}/")
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
         self.assertTrue(Group.objects.filter(id=self.group.id).exists())
+
+    def test_group_list_excludes_groups_the_user_is_not_in(self):
+        Group.objects.create(name="Someone Else's", created_by=self.outsider)
+        self.client.force_authenticate(self.member)
+        resp = self.client.get("/groups/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual([g["name"] for g in resp.data], ["G"])
 
     def test_admin_can_update_group(self):
         self.client.force_authenticate(self.admin)
@@ -273,3 +299,47 @@ class GroupInvitationTests(APITestCase):
             f"{self.INVITES}/{invite.id}/invite_responce/", {"action": "maybe"}
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_forging_invitation_body_creates_no_invitation_row(self):
+        """POST /groups/invitations/ with a forged, fully-populated body must
+        never create a row, no matter what status code it gets back.
+
+        Right now this 405s, but not because of any authz check: groups/urls.py
+        registers GroupsViewSet's r'' *before* GroupInvitationViewSet's
+        r'invitations', so the pattern ^(?P<pk>[^/.]+)/$ from GroupsViewSet
+        matches "invitations/" as a group pk before the invitations viewset's
+        own routes are even considered -- and that pk route only wires up
+        GET/PUT/PATCH/DELETE, not POST, hence 405. That's an accident of
+        registration order, not a fix (see the comment in
+        GroupInvitaionSerializer). If the routers are ever reordered so this
+        POST actually reaches GroupInvitationViewSet.create(), every field in
+        GroupInvitaionSerializer is read_only, so it should *still* create
+        nothing. Asserting on DB state instead of the status code is the point
+        of this test: it stays meaningful (and green) whichever of those two
+        reasons is currently true.
+        """
+        attacker = User.objects.create_user(username="attackerI", password="pw12345678")
+        victim_group = Group.objects.create(name="Victim Group", created_by=self.admin)
+        GroupMember.objects.create(group=victim_group, user=self.admin, role="admin")
+
+        self.client.force_authenticate(attacker)
+        self.client.post(f"{self.INVITES}/", {
+            "group": victim_group.id,
+            "invited_user": attacker.id,
+            "invited_by": attacker.id,
+            "status": "pending",
+        })
+        self.assertFalse(
+            GroupInvitaion.objects.filter(group=victim_group, invited_user=attacker).exists()
+        )
+
+    def test_accept_invite_by_wrong_user_is_404_and_creates_no_membership(self):
+        self._send_invite()
+        invite = GroupInvitaion.objects.get(invited_user=self.invitee)
+        stranger = User.objects.create_user(username="strangerI", password="pw12345678")
+        self.client.force_authenticate(stranger)
+        resp = self.client.post(f"{self.INVITES}/{invite.id}/accept_invite/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(
+            GroupMember.objects.filter(group=self.group, user=stranger).exists()
+        )

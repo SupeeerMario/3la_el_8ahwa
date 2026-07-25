@@ -180,3 +180,149 @@ class EventLocationCreateTests(APITestCase):
         self.client.force_authenticate(self.user)
         resp = self.client.post("/event-locations/", self._payload(past_event))
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class EventLocationScopingTests(APITestCase):
+    """Locks in two fixes on EventLocationViewSet:
+
+    - get_queryset() is now scoped by group membership FIRST, then filtered
+      by the attacker-supplied ?event= query param -- previously it filtered
+      on ?event= alone, so any authenticated user could read (and, through
+      the detail routes, edit or delete) another group's proposed locations.
+    - the detail routes had no object-level guard at all; only the member who
+      proposed a location may edit or delete it (IsLocationProposer).
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_user(username="loc_admin", password="pw12345678")
+        self.member = User.objects.create_user(username="loc_member", password="pw12345678")
+        self.outsider = User.objects.create_user(username="loc_outsider", password="pw12345678")
+        self.group = Group.objects.create(name="G", created_by=self.admin)
+        GroupMember.objects.create(group=self.group, user=self.admin, role="admin")
+        GroupMember.objects.create(group=self.group, user=self.member, role="member")
+        self.event = Event.objects.create(
+            created_by=self.admin, group=self.group, title="E",
+            start_time=_future(), end_time=_future(hours=2),
+        )
+        self.loc = EventLocation.objects.create(
+            event=self.event, proposed_by=self.admin, name="Cafe", latitude=1.0, longitude=2.0,
+        )
+
+    def test_non_member_listing_gets_empty_list_not_leaked_data(self):
+        self.client.force_authenticate(self.outsider)
+        resp = self.client.get(f"/event-locations/?event={self.event.id}")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        # Must be genuinely empty -- not just missing a couple of fields --
+        # so nothing about the other group's location (name, lat/lng,
+        # voted_by) reaches a non-member.
+        self.assertEqual(resp.data, [])
+
+    def test_non_member_cannot_patch_or_delete_location(self):
+        self.client.force_authenticate(self.outsider)
+        url = f"/event-locations/{self.loc.id}/?event={self.event.id}"
+
+        patch_resp = self.client.patch(url, {"name": "Hacked"})
+        self.assertEqual(patch_resp.status_code, status.HTTP_404_NOT_FOUND)
+
+        delete_resp = self.client.delete(url)
+        self.assertEqual(delete_resp.status_code, status.HTTP_404_NOT_FOUND)
+
+        self.loc.refresh_from_db()
+        self.assertEqual(self.loc.name, "Cafe")
+        self.assertTrue(EventLocation.objects.filter(id=self.loc.id).exists())
+
+    def test_group_member_who_did_not_propose_gets_403(self):
+        self.client.force_authenticate(self.member)
+        url = f"/event-locations/{self.loc.id}/?event={self.event.id}"
+
+        patch_resp = self.client.patch(url, {"name": "Hacked"})
+        self.assertEqual(patch_resp.status_code, status.HTTP_403_FORBIDDEN)
+
+        delete_resp = self.client.delete(url)
+        self.assertEqual(delete_resp.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.loc.refresh_from_db()
+        self.assertEqual(self.loc.name, "Cafe")
+        self.assertTrue(EventLocation.objects.filter(id=self.loc.id).exists())
+
+    def test_proposer_can_patch_and_delete_own_location(self):
+        self.client.force_authenticate(self.admin)
+        url = f"/event-locations/{self.loc.id}/?event={self.event.id}"
+
+        patch_resp = self.client.patch(url, {"name": "Renamed"})
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK)
+        self.loc.refresh_from_db()
+        self.assertEqual(self.loc.name, "Renamed")
+
+        delete_resp = self.client.delete(url)
+        self.assertEqual(delete_resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(EventLocation.objects.filter(id=self.loc.id).exists())
+
+
+class NonNumericIdTests(APITestCase):
+    """A non-numeric *_id used to reach the ORM as an integer lookup and raise
+    ValueError -> uncaught 500. _as_int() now coerces it to None first, so it
+    funnels into the same 403/404 a missing id already produced."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="idcheck", password="pw12345678")
+
+    def test_create_event_with_non_numeric_group_id_is_403_not_500(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.post("/events/", {
+            "group_id": "abc",
+            "title": "T",
+            "start_time": _future().isoformat(),
+            "end_time": _future(hours=2).isoformat(),
+        })
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_create_location_with_non_numeric_event_id_is_404_not_500(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.post("/event-locations/", {
+            "event_id": "abc",
+            "name": "Cafe",
+            "latitude": 1.0,
+            "longitude": 2.0,
+        })
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class EventUpdateTests(APITestCase):
+    """EventViewSet update/partial_update coverage, previously missing
+    entirely: creator-only enforcement (the destroy analogue is covered by
+    EventCreatorPermissionTests) and the partial-update fallback path in
+    EventSerializer.validate(), which falls back to self.instance's stored
+    bound when a PATCH body only supplies one of start_time/end_time."""
+
+    def setUp(self):
+        self.creator = User.objects.create_user(username="ev_creator", password="pw12345678")
+        self.member = User.objects.create_user(username="ev_member", password="pw12345678")
+        self.group = Group.objects.create(name="G", created_by=self.creator)
+        GroupMember.objects.create(group=self.group, user=self.creator, role="admin")
+        GroupMember.objects.create(group=self.group, user=self.member, role="member")
+        self.event = Event.objects.create(
+            created_by=self.creator, group=self.group, title="E",
+            start_time=_future(hours=2), end_time=_future(hours=4),
+        )
+
+    def test_non_creator_member_cannot_update_event(self):
+        self.client.force_authenticate(self.member)
+        resp = self.client.patch(f"/events/{self.event.id}/", {"title": "Hacked"})
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.title, "E")
+
+    def test_creator_patching_end_time_alone_before_stored_start_time_is_rejected(self):
+        original_end_time = self.event.end_time
+        self.client.force_authenticate(self.creator)
+        # start_time is not in this PATCH body at all -- validate() must fall
+        # back to self.instance.start_time to catch this, not just skip the
+        # cross-field check because start_time is missing from `data`.
+        resp = self.client.patch(
+            f"/events/{self.event.id}/",
+            {"end_time": _future(hours=1).isoformat()},
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.end_time, original_end_time)
