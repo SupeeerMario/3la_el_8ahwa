@@ -8,9 +8,22 @@ from .serializers import EventSerializer,EventDetailSerializer,EventLoctionsSeri
 from groups.models import GroupMember
 from rest_framework.exceptions import PermissionDenied
 # Reusable object-level permission replacing the old hand-rolled creator checks.
-from core.permissions import IsEventCreator
+from core.permissions import IsEventCreator, IsLocationProposer
 
 # Create your views here.
+
+
+def _as_int(value):
+    """Coerce a request-supplied id to int, or None.
+
+    Ids arrive as raw JSON/query strings. A non-numeric one used to reach the
+    ORM directly and raise ValueError -> 500; returning None instead funnels
+    garbage into the same 403/404 that a missing id already produced.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 # authentication_classes was removed here: JWT auth is now the global default
 # (settings.REST_FRAMEWORK), so declaring it per-view is redundant.
@@ -25,7 +38,10 @@ class EventViewSet(ModelViewSet):
         # so any group member could delete another member's event.
         if self.action in ("update", "partial_update", "destroy"):
             return [IsAuthenticated(), IsEventCreator()]
-        return [IsAuthenticated()]
+        # super() rather than a hardcoded list: the router sets
+        # self.permission_classes from each @action(permission_classes=...)
+        # kwarg, and returning a literal here would silently discard it.
+        return super().get_permissions()
 
     def get_queryset(self):
         return Event.objects.filter(
@@ -40,7 +56,7 @@ class EventViewSet(ModelViewSet):
     
     ## make it so there can be multible places and member can vote for a place
     def create(self, request, *args, **kwargs):
-        group_id = request.data.get('group_id')
+        group_id = _as_int(request.data.get('group_id'))
         current_user = request.user
         
 
@@ -69,12 +85,28 @@ class EventViewSet(ModelViewSet):
 class EventLocationViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
 
+    def get_permissions(self):
+        # This viewset had no object-level guard at all: only the member who
+        # proposed a location may edit or delete it (the analogue of
+        # IsEventCreator on events).
+        if self.action in ("update", "partial_update", "destroy"):
+            return [IsAuthenticated(), IsLocationProposer()]
+        return super().get_permissions()
+
     def get_queryset(self):
-        event_id = self.request.query_params.get('event')
-        
+        # Scope by membership FIRST. ?event= is attacker-supplied, so filtering
+        # on it alone let any authenticated user read — and through the detail
+        # routes edit or delete — the locations of groups they don't belong to
+        # (GET/PATCH/DELETE /event-locations/<id>/?event=<other group's event>).
+        qs = EventLocation.objects.filter(
+            event__group__members__user = self.request.user
+        )
+
+        event_id = _as_int(self.request.query_params.get('event'))
+
         if not event_id:
-            return EventLocation.objects.none()
-        return EventLocation.objects.filter(event_id = event_id)
+            return qs.none()
+        return qs.filter(event_id = event_id)
     
 
     def get_serializer_class(self):
@@ -87,7 +119,7 @@ class EventLocationViewSet(ModelViewSet):
 
     def create(self, request, *args, **kwargs):
     
-        event_id = request.data.get('event_id')
+        event_id = _as_int(request.data.get('event_id'))
         current_user = request.user
 
         try:
@@ -126,3 +158,8 @@ class EventLocationViewSet(ModelViewSet):
         )
 
 
+
+
+
+# TODO(phase 2): expose LocationVote, tally votes and set
+# Event.winning_location. See .claude/PLAN.md.

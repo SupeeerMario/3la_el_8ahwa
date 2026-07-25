@@ -6,6 +6,7 @@ from .serializers import GroupSerializer, GroupMemberSerializer, GroupInvitaionS
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework import status
+from django.db import transaction
 from django.db.models import Count
 from django.contrib.auth import get_user_model
 # Reusable object-level permission replacing the inline GroupMember role checks.
@@ -26,10 +27,21 @@ class GroupsViewSet(ModelViewSet):
         # any authenticated user can edit or delete any group via PUT/DELETE.
         if self.action in ("update", "partial_update", "destroy"):
             return [IsAuthenticated(), IsGroupAdmin()]
-        return [IsAuthenticated()]
+        # super() rather than a hardcoded list: the router sets
+        # self.permission_classes from each @action(permission_classes=...)
+        # kwarg, and returning a literal here would silently discard it.
+        return super().get_permissions()
 
     def get_queryset(self):
-        return Group.objects.annotate(members_count = Count('members'))
+        # Scoped to the requesting user's groups. Unscoped, GET /groups/
+        # returned every group in the database — name, desc, member count and
+        # the creator's email (nested UserSeriailizer) — to any authenticated
+        # user, and GET /groups/<id>/ retrieved any single one. Non-members now
+        # get 404 rather than 403 on the default detail routes, which also
+        # avoids confirming that a given group id exists.
+        return Group.objects.filter(
+            members__user = self.request.user
+        ).annotate(members_count = Count('members'))
 
 
     @action(
@@ -63,56 +75,64 @@ class GroupsViewSet(ModelViewSet):
     def leave_group(self, request, pk = None):
         current_user = request.user
 
-        try:
-            group = Group.objects.get(pk=pk)
+        # The whole departure runs in one transaction with the group row
+        # locked. Without the lock two members leaving concurrently could each
+        # delete their own membership, then each see the other as "remaining",
+        # so neither the delete-empty-group nor the promote-new-admin branch
+        # fires: the group is left with zero members and zero admins, invisible
+        # to my_groups and undeletable. The promote branch could also 500 on
+        # save(update_fields=...) against a row the other request just removed.
+        with transaction.atomic():
+            try:
+                group = Group.objects.select_for_update().get(pk=pk)
 
-        except Group.DoesNotExist:
+            except Group.DoesNotExist:
+                return Response(
+                    {'error':'Group not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            try:
+                membreship = GroupMember.objects.get(user = current_user, group=group)
+
+            except GroupMember.DoesNotExist:
+                return Response(
+                    {'error':'You are not a member of this group'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            was_admin = membreship.role == "admin"
+            membreship.delete()
+
+            # Owner-transfer gap fix: previously a member just left and an
+            # admin leaving could orphan the group (no admins, or an empty group
+            # that lingered forever).
+            remaining = GroupMember.objects.filter(group=group)
+
+            if not remaining.exists():
+                # Last member left -> remove the now-empty group entirely.
+                group_name = group.name
+                group.delete()
+                return Response(
+                    {'message': f'You have left and {group_name} was deleted (no members remained)'},
+                    status=status.HTTP_200_OK
+                )
+
+            # If the departing admin was the last admin, promote the most recently
+            # joined remaining member so the group always has at least one admin.
+            if was_admin and not remaining.filter(role="admin").exists():
+                new_admin = remaining.order_by("-joined_at", "-id").first()
+                new_admin.role = "admin"
+                new_admin.save(update_fields=["role"])
+                return Response(
+                    {'message': f'You have left {group.name}; admin transferred to {new_admin.user}'},
+                    status=status.HTTP_200_OK
+                )
+
             return Response(
-                {'error':'Group not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        try:
-            membreship = GroupMember.objects.get(user = current_user, group=group)
-
-        except GroupMember.DoesNotExist:
-            return Response(
-                {'error':'You are not a member of this group'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        was_admin = membreship.role == "admin"
-        membreship.delete()
-
-        # Owner-transfer gap fix: previously a member just left and an
-        # admin leaving could orphan the group (no admins, or an empty group
-        # that lingered forever).
-        remaining = GroupMember.objects.filter(group=group)
-
-        if not remaining.exists():
-            # Last member left -> remove the now-empty group entirely.
-            group_name = group.name
-            group.delete()
-            return Response(
-                {'message': f'You have left and {group_name} was deleted (no members remained)'},
+                {'message':f'You have successfully left the gruop {group.name}'},
                 status=status.HTTP_200_OK
             )
-
-        # If the departing admin was the last admin, promote the most recently
-        # joined remaining member so the group always has at least one admin.
-        if was_admin and not remaining.filter(role="admin").exists():
-            new_admin = remaining.order_by("-joined_at", "-id").first()
-            new_admin.role = "admin"
-            new_admin.save(update_fields=["role"])
-            return Response(
-                {'message': f'You have left {group.name}; admin transferred to {new_admin.user}'},
-                status=status.HTTP_200_OK
-            )
-
-        return Response(
-            {'message':f'You have successfully left the gruop {group.name}'},
-            status=status.HTTP_200_OK
-        )
 
 
     @action(
