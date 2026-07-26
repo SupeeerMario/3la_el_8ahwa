@@ -1,10 +1,3 @@
-# Reusable DRF permission classes.
-#
-# Why this file exists: authorization was previously done by copy-pasting
-# `GroupMember.objects.filter(...).exists()` checks into each view, which is
-# easy to forget (the events destroy route was left unguarded). Centralizing
-# the rules here lets views attach them via get_permissions()/permission_classes
-# and have DRF enforce them consistently through check_object_permissions().
 from rest_framework.permissions import BasePermission
 
 from groups.models import Group, GroupMember
@@ -19,10 +12,6 @@ def _group_of(obj):
     if group is not None:
         return group
 
-    # Not everything hangs off a group directly: EventLocation and CheckIn
-    # reach it through .event, LocationVote through .location.event. Without
-    # these hops IsGroupMember/IsGroupAdmin returned None -> False for those
-    # models, i.e. they denied *everyone* silently instead of working.
     event = getattr(obj, "event", None)
     if event is None:
         event = getattr(getattr(obj, "location", None), "event", None)

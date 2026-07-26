@@ -36,8 +36,6 @@ class GroupAdminPermissionTests(APITestCase):
         GroupMember.objects.create(group=self.group, user=self.admin, role="admin")
         GroupMember.objects.create(group=self.group, user=self.member, role="member")
 
-    # A non-member gets 404, not 403: get_queryset() is scoped to the user's
-    # own groups, so the object never resolves and we don't leak its existence.
     def test_non_member_cannot_update_group(self):
         self.client.force_authenticate(self.outsider)
         resp = self.client.patch(f"/groups/{self.group.id}/", {"name": "Hacked"})
@@ -51,8 +49,6 @@ class GroupAdminPermissionTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
         self.assertTrue(Group.objects.filter(id=self.group.id).exists())
 
-    # A member who isn't an admin is the realistic caller, and reaches
-    # IsGroupAdmin proper -> 403.
     def test_non_admin_member_cannot_update_group(self):
         self.client.force_authenticate(self.member)
         resp = self.client.patch(f"/groups/{self.group.id}/", {"name": "Hacked"})
@@ -185,7 +181,6 @@ class GroupLeaveTests(APITestCase):
         )
         latest_membership.refresh_from_db()
         self.assertEqual(latest_membership.role, "admin")
-        # exactly one admin remains
         self.assertEqual(
             GroupMember.objects.filter(group=self.group, role="admin").count(), 1
         )

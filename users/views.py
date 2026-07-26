@@ -4,8 +4,6 @@ from rest_framework.decorators import action
 from .models import User
 from .serializers import UserSeriailizer, UserRegisterSerializer, UserLoginSerializer
 from rest_framework import viewsets, status
-# Switched from rest_framework.authtoken.models.Token to SimpleJWT: login now
-# mints a JWT refresh/access pair instead of a stateful DB token.
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.token_blacklist.models import (
     BlacklistedToken,
@@ -15,8 +13,6 @@ from rest_framework_simplejwt.token_blacklist.models import (
 
 # Create your views here.
 
-# The per-view authentication_classes was removed: authentication is now set
-# globally to JWT in settings.REST_FRAMEWORK, so the viewset inherits it.
 class UserViewSet(viewsets.ViewSet):
 
     @action(
@@ -49,9 +45,6 @@ class UserViewSet(viewsets.ViewSet):
         seriailizer = UserLoginSerializer(data= request.data)
         seriailizer.is_valid(raise_exception= True)
         user = seriailizer.validated_data["user"]
-        # The serializer already raises on invalid credentials, so the old
-        # `if user / else: return 401` branch was unreachable and was removed.
-        # Issue a JWT pair: short-lived access for requests, refresh to renew.
         refresh = RefreshToken.for_user(user)
         return Response({
             "user": UserSeriailizer(user).data,
@@ -90,11 +83,6 @@ class UserViewSet(viewsets.ViewSet):
     )
     def delete_profile(self, request):
         current_user = request.user
-        # Blacklist this user's outstanding refresh tokens before deleting the
-        # row. A refresh token outlives its user by up to 7 days, and
-        # SimpleJWT's TokenRefreshSerializer does an unguarded
-        # User.objects.get() — so posting one after account deletion raised
-        # User.DoesNotExist (an uncaught 500) instead of a clean 401.
         for token in OutstandingToken.objects.filter(user=current_user):
             BlacklistedToken.objects.get_or_create(token=token)
         current_user.delete()

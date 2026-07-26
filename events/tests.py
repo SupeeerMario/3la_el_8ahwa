@@ -57,8 +57,6 @@ class EventCreateTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_winning_location_cannot_be_set_by_client(self):
-        # winning_location was removed from the write serializer; a client value
-        # must be ignored, leaving the event with no winner on creation.
         self.client.force_authenticate(self.user)
         event = Event.objects.create(
             created_by=self.user, group=self.group, title="E",
@@ -212,9 +210,6 @@ class EventLocationScopingTests(APITestCase):
         self.client.force_authenticate(self.outsider)
         resp = self.client.get(f"/event-locations/?event={self.event.id}")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        # Must be genuinely empty -- not just missing a couple of fields --
-        # so nothing about the other group's location (name, lat/lng,
-        # voted_by) reaches a non-member.
         self.assertEqual(resp.data, [])
 
     def test_non_member_cannot_patch_or_delete_location(self):
@@ -316,9 +311,6 @@ class EventUpdateTests(APITestCase):
     def test_creator_patching_end_time_alone_before_stored_start_time_is_rejected(self):
         original_end_time = self.event.end_time
         self.client.force_authenticate(self.creator)
-        # start_time is not in this PATCH body at all -- validate() must fall
-        # back to self.instance.start_time to catch this, not just skip the
-        # cross-field check because start_time is missing from `data`.
         resp = self.client.patch(
             f"/events/{self.event.id}/",
             {"end_time": _future(hours=1).isoformat()},

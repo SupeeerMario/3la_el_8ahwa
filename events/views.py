@@ -7,7 +7,6 @@ from .models import Event, EventLocation, LocationVote
 from .serializers import EventSerializer,EventDetailSerializer,EventLoctionsSerializer ,EventLoctionsDetailsSerializer, LocationVoteSerializer
 from groups.models import GroupMember
 from rest_framework.exceptions import PermissionDenied
-# Reusable object-level permission replacing the old hand-rolled creator checks.
 from core.permissions import IsEventCreator, IsLocationProposer
 
 # Create your views here.
@@ -25,22 +24,13 @@ def _as_int(value):
     except (TypeError, ValueError):
         return None
 
-# authentication_classes was removed here: JWT auth is now the global default
-# (settings.REST_FRAMEWORK), so declaring it per-view is redundant.
 class EventViewSet(ModelViewSet):
 
     permission_classes = [IsAuthenticated]
 
     def get_permissions(self):
-        # Only the creator may edit or delete an event. This replaces both the
-        # manual `update` override (which duplicated this check) and the
-        # commented-out `destroy` override. destroy was previously unguarded,
-        # so any group member could delete another member's event.
         if self.action in ("update", "partial_update", "destroy"):
             return [IsAuthenticated(), IsEventCreator()]
-        # super() rather than a hardcoded list: the router sets
-        # self.permission_classes from each @action(permission_classes=...)
-        # kwarg, and returning a literal here would silently discard it.
         return super().get_permissions()
 
     def get_queryset(self):
@@ -81,23 +71,15 @@ class EventViewSet(ModelViewSet):
     
 
 
-# authentication_classes removed here too — inherits the global JWT default.
 class EventLocationViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_permissions(self):
-        # This viewset had no object-level guard at all: only the member who
-        # proposed a location may edit or delete it (the analogue of
-        # IsEventCreator on events).
         if self.action in ("update", "partial_update", "destroy"):
             return [IsAuthenticated(), IsLocationProposer()]
         return super().get_permissions()
 
     def get_queryset(self):
-        # Scope by membership FIRST. ?event= is attacker-supplied, so filtering
-        # on it alone let any authenticated user read — and through the detail
-        # routes edit or delete — the locations of groups they don't belong to
-        # (GET/PATCH/DELETE /event-locations/<id>/?event=<other group's event>).
         qs = EventLocation.objects.filter(
             event__group__members__user = self.request.user
         )
@@ -161,5 +143,3 @@ class EventLocationViewSet(ModelViewSet):
 
 
 
-# TODO(phase 2): expose LocationVote, tally votes and set
-# Event.winning_location. See .claude/PLAN.md.

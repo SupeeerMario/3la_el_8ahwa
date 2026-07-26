@@ -15,9 +15,6 @@ class EventSerializer(serializers.ModelSerializer):
             'active',
             'finished'
         ]
-        # read_only_fields must live inside Meta to take effect.
-        # winning_location is intentionally excluded: it is decided by votes,
-        # not set by the client.
         read_only_fields = ['created_at', 'active', 'finished']
 
     def validate_start_time(self, value):
@@ -31,8 +28,6 @@ class EventSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, data):
-        # On partial updates either bound may be absent; fall back to the
-        # instance value so the comparison never hits a None.
         start_time = data.get('start_time') or getattr(self.instance, 'start_time', None)
         end_time = data.get('end_time') or getattr(self.instance, 'end_time', None)
 
@@ -76,10 +71,6 @@ class EventLoctionsSerializer(serializers.ModelSerializer):
 
 
 class EventLoctionsDetailsSerializer(serializers.ModelSerializer):
-    # This serializer used to raise on use: it listed a 'vote_by' field that
-    # didn't exist and declared `voted_by` with no get_voted_by method. Now it
-    # exposes two computed read-only fields backed by the methods below:
-    # vote_count (tally) and voted_by (usernames who voted).
     proposed_by = serializers.StringRelatedField()
     vote_count = serializers.SerializerMethodField()
     voted_by = serializers.SerializerMethodField()

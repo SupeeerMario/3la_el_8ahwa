@@ -45,24 +45,12 @@ class UserAuthTests(APITestCase):
         resp = self.client.post("/users/token/refresh/", {"refresh": original_refresh})
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertIn("access", resp.data)
-        # SIMPLE_JWT has ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION on,
-        # so a bare `"access" in resp.data` check passes even if rotation and
-        # blacklisting were silently turned off -- it doesn't distinguish
-        # "issues a new access token" from "issues a new access token *and*
-        # correctly rotates/revokes the refresh token". Pin both: the response
-        # must carry a genuinely different refresh token, and replaying the
-        # original (now-rotated-away) refresh token must be rejected.
         self.assertIn("refresh", resp.data)
         self.assertNotEqual(resp.data["refresh"], original_refresh)
         reuse = self.client.post("/users/token/refresh/", {"refresh": original_refresh})
         self.assertEqual(reuse.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_protected_route_requires_authentication(self):
-        # JWTAuthentication is first in DEFAULT_AUTHENTICATION_CLASSES and
-        # declares a WWW-Authenticate header, so DRF's permission_denied()
-        # deterministically raises NotAuthenticated (401), never
-        # PermissionDenied (403), here. Accepting either masked whether that
-        # was actually true.
         resp = self.client.get("/users/get_profile/")
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
@@ -117,10 +105,6 @@ class UserTokenLifecycleTests(APITestCase):
         self.assertEqual(del_resp.status_code, status.HTTP_200_OK)
         self.client.credentials()
 
-        # Before the fix, TokenRefreshSerializer's unguarded User.objects.get()
-        # raised User.DoesNotExist here (an uncaught 500) because the user row
-        # was already gone. delete_profile now blacklists the user's
-        # outstanding tokens first, so this is a clean 401 instead.
         resp = self.client.post("/users/token/refresh/", {"refresh": refresh_token})
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
