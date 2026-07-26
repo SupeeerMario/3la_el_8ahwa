@@ -31,8 +31,12 @@ RUN useradd -m -r appuser && \
     chown -R appuser:appuser /app
 
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1 
+ENV PYTHONUNBUFFERED=1
 
 USER appuser
 EXPOSE 8000
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
+    CMD python -c "import socket; socket.create_connection(('127.0.0.1', 8000), 2)"
+
 CMD ["/app/entrypoint.prod.sh"]

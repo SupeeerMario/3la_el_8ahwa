@@ -1,3 +1,5 @@
+name: ala_el_8ahwa
+
 services:
   db-local:
     image: postgres:17
@@ -5,18 +7,20 @@ services:
       - postgres_data:/var/lib/postgresql/data
     env_file:
       - .env.local
-    environment:
-      POSTGRES_DB: ala_el_8ahwa
-      POSTGRES_USER: khaled
-      POSTGRES_PASSWORD: 123123
     container_name: ala_el_8ahwa_db_local
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   django-app-local:
     build: .
-    user: root
-    command: python manage.py runserver 0.0.0.0:8000 
+    command: python manage.py runserver 0.0.0.0:8000
     depends_on:
-      - db-local
+      db-local:
+        condition: service_healthy
     volumes:
       - .:/app
       - ./static:/app/staticfiles
@@ -30,13 +34,22 @@ services:
     build:
       context: .
       dockerfile: nginx.dockerfile
+    environment:
+      - DJANGO_UPSTREAM=django-app-local
     ports:
       - "8001:80"
     volumes:
       - ./static:/static:ro
     depends_on:
-      - django-app-local
+      django-app-local:
+        condition: service_healthy
     container_name: ala_el_8ahwa_reverse_proxy_local
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
 volumes:
   postgres_data:

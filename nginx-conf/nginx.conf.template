@@ -22,10 +22,16 @@ http {
        #     alias /home/app/web/mediafiles/;
        # }
 
+       location /healthz {
+           access_log off;
+           return 200 "ok\n";
+           add_header Content-Type text/plain;
+       }
+
        # Handles all other requests
        location / {
            # Forward requests to Django application
-           proxy_pass http://django-app-local:8000;
+           proxy_pass http://${DJANGO_UPSTREAM}:8000;
 
            # Pass important headers to Django for proper request handling
            proxy_set_header Host $host;                          # Original host header

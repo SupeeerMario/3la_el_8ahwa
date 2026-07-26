@@ -1,17 +1,25 @@
+name: ala_el_8ahwa_prod
+
 services:
   db-prod:
     image: postgres:17
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data_prod:/var/lib/postgresql/data
     env_file:
       - .env.prod
     container_name: ala_el_8ahwa_db_prod
-
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   django-app-prod:
     build: .
     depends_on:
-      - db-prod
+      db-prod:
+        condition: service_healthy
     volumes:
       - ./static:/app/staticfiles
     env_file:
@@ -24,14 +32,22 @@ services:
     build:
       context: .
       dockerfile: nginx.dockerfile
+    environment:
+      - DJANGO_UPSTREAM=django-app-prod
     ports:
-      - "8001:80"
+      - "8002:80"
     volumes:
       - ./static:/static:ro
     depends_on:
-      - django-app-prod
+      django-app-prod:
+        condition: service_healthy
     container_name: ala_el_8ahwa_reverse_proxy_prod
-
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
 volumes:
-  postgres_data:
+  postgres_data_prod:
