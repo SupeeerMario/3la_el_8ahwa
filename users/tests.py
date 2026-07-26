@@ -122,3 +122,47 @@ class UserTokenLifecycleTests(APITestCase):
 
         reuse = self.client.post("/users/token/refresh/", {"refresh": refresh_token})
         self.assertEqual(reuse.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class UserPasswordPolicyTests(APITestCase):
+    """AUTH_PASSWORD_VALIDATORS is configured but DRF never invoked it, so any
+    password was accepted at registration. One case per configured validator."""
+
+    def _register(self, password, username="newuser", email="new@example.com"):
+        return self.client.post("/users/register/", {
+            "username": username,
+            "email": email,
+            "password": password,
+        })
+
+    def assertRejected(self, resp):
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", resp.data)
+        self.assertFalse(User.objects.exists())
+
+    def test_register_rejects_short_password(self):
+        self.assertRejected(self._register("Ab3!x"))
+
+    def test_register_rejects_entirely_numeric_password(self):
+        self.assertRejected(self._register("29481067"))
+
+    def test_register_rejects_common_password(self):
+        self.assertRejected(self._register("password"))
+
+    def test_register_rejects_password_similar_to_username(self):
+        self.assertRejected(self._register("chessplayer", username="chessplayer"))
+
+    def test_register_rejects_single_character_password(self):
+        self.assertRejected(self._register("1"))
+
+    def test_register_accepts_a_strong_password(self):
+        resp = self._register("tr0mbone-Vault-91")
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(User.objects.filter(username="newuser").exists())
+
+    def test_rejected_registration_returns_a_usable_message(self):
+        resp = self._register("1")
+        self.assertTrue(
+            any("too short" in str(m).lower() for m in resp.data["password"]),
+            resp.data,
+        )
