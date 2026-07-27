@@ -5,6 +5,12 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from core import errors, storage
 from core.errors import error_response
+from core.throttling import (
+    LoginAccountThrottle,
+    LoginIPThrottle,
+    PasswordResetEmailThrottle,
+    PasswordResetIPThrottle,
+)
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from .serializers import (
@@ -76,7 +82,8 @@ class UserViewSet(viewsets.ViewSet):
             detail=False,
             methods=["POST"],
             permission_classes = [AllowAny],
-            authentication_classes = []
+            authentication_classes = [],
+            throttle_classes = [LoginIPThrottle, LoginAccountThrottle]
     )
     def login(self, request):
 
@@ -85,6 +92,8 @@ class UserViewSet(viewsets.ViewSet):
         user = seriailizer.validated_data["user"]
 
         if user is None:
+            for throttle in (LoginIPThrottle(), LoginAccountThrottle()):
+                throttle.record_failure(request, self)
             return error_response(
                 errors.INVALID_CREDENTIALS,
                 "Invalid credentials",
@@ -157,6 +166,7 @@ class UserViewSet(viewsets.ViewSet):
             methods=["POST"],
             permission_classes = [AllowAny],
             authentication_classes = [],
+            throttle_classes = [PasswordResetIPThrottle, PasswordResetEmailThrottle],
             url_path="password_reset"
     )
     def password_reset(self, request):
