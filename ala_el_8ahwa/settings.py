@@ -25,7 +25,6 @@ SECRET_KEY = os.getenv("DB_SECRET_KEY")
 DEBUG = os.getenv("DEBUG") == "True"
 
 
-NUM_PROXIES = 1
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
@@ -155,6 +154,20 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
     "EXCEPTION_HANDLER": "core.exceptions.exception_handler",
+    "NUM_PROXIES": int(os.getenv("NUM_PROXIES", "1")),
+    "DEFAULT_THROTTLE_RATES": {
+        "login_ip": os.getenv("THROTTLE_LOGIN_IP", "10/min"),
+        "login_account": os.getenv("THROTTLE_LOGIN_ACCOUNT", "20/hour"),
+        "password_reset_email": os.getenv("THROTTLE_PASSWORD_RESET_EMAIL", "3/hour"),
+        "password_reset_ip": os.getenv("THROTTLE_PASSWORD_RESET_IP", "10/hour"),
+    },
+}
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "django_cache_table",
+    }
 }
 
 EMAIL_BACKEND = os.getenv(

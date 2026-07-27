@@ -1,3 +1,6 @@
+from contextlib import ExitStack, contextmanager
+from unittest.mock import patch
+
 from rest_framework.test import APITestCase
 from rest_framework import status
 from django.contrib.auth import get_user_model
@@ -628,3 +631,176 @@ class AvatarTests(APITestCase):
         urls = {row["user"]["id"]: row["user"]["avatar_url"] for row in resp.data["members"]}
         self.assertIn("v333", urls[self.user.id])
         self.assertIsNone(urls[self.other.id])
+
+
+class ThrottleTests(APITestCase):
+    """Rate limits on the two unauthenticated auth endpoints. Rates are
+    overridden per test; the cache is shared state and must be cleared."""
+
+    RATES = {
+        "login_ip": "3/min",
+        "login_account": "3/hour",
+        "password_reset_email": "2/hour",
+        "password_reset_ip": "5/hour",
+    }
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.user = User.objects.create_user(
+            username="throttled", email="throttled@example.com",
+            password="tr0mbone-Vault-91",
+        )
+
+    def tearDown(self):
+        from django.core.cache import cache
+
+        cache.clear()
+
+    @contextmanager
+    def _rates(self, **overrides):
+        """DRF binds THROTTLE_RATES onto the class at import time, so
+        override_settings(REST_FRAMEWORK=...) does not reach it."""
+        from core.throttling import (
+            LoginAccountThrottle,
+            LoginIPThrottle,
+            PasswordResetEmailThrottle,
+            PasswordResetIPThrottle,
+        )
+
+        rates = {**self.RATES, **overrides}
+        classes = (
+            LoginIPThrottle,
+            LoginAccountThrottle,
+            PasswordResetEmailThrottle,
+            PasswordResetIPThrottle,
+        )
+        with ExitStack() as stack:
+            for throttle_class in classes:
+                stack.enter_context(
+                    patch.object(throttle_class, "THROTTLE_RATES", rates)
+                )
+            yield
+
+    def _login(self, password="wrong-password-entirely", identifier="throttled", **extra):
+        return self.client.post(
+            "/users/login/", {"identifier": identifier, "password": password}, **extra
+        )
+
+    def test_repeated_failed_logins_are_throttled(self):
+        with self._rates():
+            for _ in range(3):
+                self.assertEqual(self._login().status_code, status.HTTP_400_BAD_REQUEST)
+            blocked = self._login()
+        self.assertEqual(blocked.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(blocked.data["code"], "throttled")
+
+    def test_a_throttled_response_carries_retry_after(self):
+        with self._rates():
+            for _ in range(3):
+                self._login()
+            blocked = self._login()
+        self.assertIn("Retry-After", blocked)
+
+    def test_successful_logins_are_not_throttled(self):
+        with self._rates():
+            for _ in range(6):
+                resp = self._login(password="tr0mbone-Vault-91")
+                self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+    def test_a_correct_password_still_works_below_the_limit(self):
+        with self._rates():
+            self._login()
+            self._login()
+            resp = self._login(password="tr0mbone-Vault-91")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+    def test_failures_against_one_account_do_not_block_another(self):
+        User.objects.create_user(
+            username="bystander", email="bystander@example.com",
+            password="tr0mbone-Vault-91",
+        )
+        with self._rates(login_ip="100/min"):
+            for _ in range(3):
+                self._login()
+            other = self.client.post("/users/login/", {
+                "identifier": "bystander", "password": "tr0mbone-Vault-91",
+            })
+        self.assertEqual(other.status_code, status.HTTP_200_OK)
+
+    def test_the_account_limit_survives_a_change_of_ip(self):
+        with self._rates(login_ip="100/min"):
+            for i in range(3):
+                self._login(REMOTE_ADDR=f"10.0.0.{i}")
+            blocked = self._login(REMOTE_ADDR="10.0.0.99")
+        self.assertEqual(blocked.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_the_ip_limit_survives_a_change_of_account(self):
+        with self._rates(login_account="100/hour"):
+            for i in range(3):
+                self._login(identifier=f"ghost{i}")
+            blocked = self._login(identifier="another-ghost")
+        self.assertEqual(blocked.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_the_account_limit_is_case_insensitive(self):
+        with self._rates(login_ip="100/min"):
+            for _ in range(3):
+                self._login(identifier="THROTTLED")
+            blocked = self._login(identifier="throttled")
+        self.assertEqual(blocked.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_password_reset_is_throttled_per_address(self):
+        with self._rates():
+            for _ in range(2):
+                resp = self.client.post(
+                    "/users/password_reset/", {"email": "throttled@example.com"}
+                )
+                self.assertEqual(resp.status_code, status.HTTP_200_OK)
+            blocked = self.client.post(
+                "/users/password_reset/", {"email": "throttled@example.com"}
+            )
+        self.assertEqual(blocked.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(blocked.data["code"], "throttled")
+
+    def test_throttling_one_address_does_not_block_another(self):
+        with self._rates():
+            for _ in range(2):
+                self.client.post(
+                    "/users/password_reset/", {"email": "throttled@example.com"}
+                )
+            other = self.client.post(
+                "/users/password_reset/", {"email": "someone-else@example.com"}
+            )
+        self.assertEqual(other.status_code, status.HTTP_200_OK)
+
+    def test_an_unknown_address_is_throttled_the_same_way(self):
+        """Otherwise the throttle itself becomes a user-enumeration oracle."""
+        with self._rates():
+            for _ in range(2):
+                self.client.post(
+                    "/users/password_reset/", {"email": "nobody@example.com"}
+                )
+            blocked = self.client.post(
+                "/users/password_reset/", {"email": "nobody@example.com"}
+            )
+        self.assertEqual(blocked.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_the_reset_ip_limit_catches_a_spread_of_addresses(self):
+        with self._rates(password_reset_email="100/hour"):
+            for i in range(5):
+                self.client.post("/users/password_reset/", {"email": f"t{i}@example.com"})
+            blocked = self.client.post(
+                "/users/password_reset/", {"email": "final@example.com"}
+            )
+        self.assertEqual(blocked.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_registration_is_not_throttled_by_login_failures(self):
+        with self._rates():
+            for _ in range(4):
+                self._login()
+            resp = self.client.post("/users/register/", {
+                "username": "brandnew", "email": "brandnew@example.com",
+                "password": "tr0mbone-Vault-91",
+            })
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
