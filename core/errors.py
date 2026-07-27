@@ -32,6 +32,11 @@ INVALID_RESET_TOKEN = "invalid_reset_token"
 INCORRECT_PASSWORD = "incorrect_password"
 EMAIL_TAKEN = "email_taken"
 
+AVATAR_STORAGE_UNCONFIGURED = "avatar_storage_unconfigured"
+UNSUPPORTED_MEDIA_TYPE = "unsupported_media_type"
+FILE_TOO_LARGE = "file_too_large"
+INVALID_AVATAR_PATH = "invalid_avatar_path"
+
 MISSING_FIELD = "missing_field"
 
 

@@ -1,9 +1,11 @@
+import re
+
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from core import errors
+from core import errors, storage
 from core.errors import error_response
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -32,6 +34,20 @@ def _blacklist_outstanding_tokens(user):
 
 
 EMAIL_TAKEN_MESSAGE = "This email is already in use"
+
+_AVATAR_PATH = re.compile(r"^avatars/(\d+)/[0-9a-f]{32}\.(jpg|png|webp)$")
+
+
+def _as_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_own_avatar_path(path, user_id):
+    match = _AVATAR_PATH.fullmatch(path)
+    return match is not None and match.group(1) == str(user_id)
 
 
 class UserViewSet(viewsets.ViewSet):
@@ -230,3 +246,90 @@ class UserViewSet(viewsets.ViewSet):
     )
     def get_profile(self, request):
         return Response(UserSeriailizer(request.user).data)
+
+
+    @action(
+        detail=False,
+        methods=["POST"],
+        permission_classes = [IsAuthenticated],
+        url_path="avatar_upload_url"
+    )
+    def avatar_upload_url(self, request):
+        if not storage.is_configured():
+            return error_response(
+                errors.AVATAR_STORAGE_UNCONFIGURED,
+                "Avatar uploads are not available on this deployment",
+                status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        content_type = request.data.get("content_type")
+        content_length = _as_int(request.data.get("content_length"))
+
+        if content_type not in storage.AVATAR_CONTENT_TYPES:
+            return error_response(
+                errors.UNSUPPORTED_MEDIA_TYPE,
+                "content_type must be one of "
+                + ", ".join(sorted(storage.AVATAR_CONTENT_TYPES)),
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        if content_length is None or content_length < 1:
+            return error_response(
+                errors.MISSING_FIELD,
+                "content_length is required and must be a positive integer",
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        if content_length > settings.AVATAR_MAX_BYTES:
+            return error_response(
+                errors.FILE_TOO_LARGE,
+                f"Avatars may not exceed {settings.AVATAR_MAX_BYTES} bytes",
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        path = storage.avatar_path_for(request.user.id, content_type)
+
+        return Response({
+            "upload_url": storage.signed_upload_url(path, content_type, content_length),
+            "path": path,
+            "method": "PUT",
+            "headers": {
+                "Content-Type": content_type,
+                "Content-Length": str(content_length),
+            },
+            "expires_in": settings.AVATAR_UPLOAD_URL_TTL,
+        })
+
+
+    @action(
+        detail=False,
+        methods=["POST", "DELETE"],
+        permission_classes = [IsAuthenticated]
+    )
+    def avatar(self, request):
+        current_user = request.user
+        previous_path = current_user.avatar_path
+
+        if request.method == "DELETE":
+            if previous_path:
+                current_user.avatar_path = ""
+                current_user.save(update_fields=["avatar_path"])
+                storage.delete_object(previous_path)
+            return Response(UserSeriailizer(current_user).data)
+
+        path = request.data.get("path") or ""
+
+        if not _is_own_avatar_path(path, current_user.id):
+            return error_response(
+                errors.INVALID_AVATAR_PATH,
+                "path must be one issued to you by avatar_upload_url",
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        current_user.avatar_path = path
+        current_user.save(update_fields=["avatar_path"])
+
+        if previous_path and previous_path != path:
+            storage.delete_object(previous_path)
+
+        return Response(UserSeriailizer(current_user).data)

@@ -4,6 +4,7 @@ cryptography==48.0.0
 Django==6.0.2
 djangorestframework==3.16.1
 djangorestframework_simplejwt==5.5.1
+google-cloud-storage==3.4.1
 gunicorn==25.1.0
 packaging==26.0
 psycopg2-binary==2.9.11
