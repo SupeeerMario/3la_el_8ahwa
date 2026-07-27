@@ -9,7 +9,6 @@ class User(AbstractUser):
     is_active = models.BooleanField(default=True)
     display_name = models.CharField(max_length=50, blank=True)
     email = models.EmailField("email address", blank=True, null=True)
-    avatar_path = models.CharField(max_length=255, blank=True)
 
     class Meta(AbstractUser.Meta):
         constraints = [
