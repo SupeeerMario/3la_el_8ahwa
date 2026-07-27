@@ -3,7 +3,7 @@ from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from core import errors
+from core import errors, storage
 from core.errors import error_response
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -32,6 +32,13 @@ def _blacklist_outstanding_tokens(user):
 
 
 EMAIL_TAKEN_MESSAGE = "This email is already in use"
+
+
+def _as_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class UserViewSet(viewsets.ViewSet):
@@ -230,3 +237,57 @@ class UserViewSet(viewsets.ViewSet):
     )
     def get_profile(self, request):
         return Response(UserSeriailizer(request.user).data)
+
+
+    @action(
+        detail=False,
+        methods=["POST"],
+        permission_classes = [IsAuthenticated],
+        url_path="avatar_upload_signature"
+    )
+    def avatar_upload_signature(self, request):
+        if not storage.is_configured():
+            return error_response(
+                errors.AVATAR_STORAGE_UNCONFIGURED,
+                "Avatar uploads are not available on this deployment",
+                status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        return Response(storage.upload_signature(request.user.id))
+
+
+    @action(
+        detail=False,
+        methods=["POST", "DELETE"],
+        permission_classes = [IsAuthenticated]
+    )
+    def avatar(self, request):
+        current_user = request.user
+
+        if not storage.is_configured():
+            return error_response(
+                errors.AVATAR_STORAGE_UNCONFIGURED,
+                "Avatar uploads are not available on this deployment",
+                status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        if request.method == "DELETE":
+            if current_user.avatar_version:
+                current_user.avatar_version = None
+                current_user.save(update_fields=["avatar_version"])
+                storage.destroy_avatar(current_user.id)
+            return Response(UserSeriailizer(current_user).data)
+
+        version = _as_int(request.data.get("version"))
+
+        if version is None or version < 1:
+            return error_response(
+                errors.MISSING_FIELD,
+                "version is required and must be the version Cloudinary returned",
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        current_user.avatar_version = version
+        current_user.save(update_fields=["avatar_version"])
+
+        return Response(UserSeriailizer(current_user).data)

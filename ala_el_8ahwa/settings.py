@@ -167,6 +167,10 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "no-reply@localhost")
 
+CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "")
+AVATAR_SIGNATURE_TTL = int(os.getenv("AVATAR_SIGNATURE_TTL", "600"))
+AVATAR_RENDER_SIZE = int(os.getenv("AVATAR_RENDER_SIZE", "256"))
+
 PASSWORD_RESET_TIMEOUT = int(os.getenv("PASSWORD_RESET_TIMEOUT", "3600"))
 PASSWORD_RESET_DEEP_LINK = os.getenv(
     "PASSWORD_RESET_DEEP_LINK", "alael8ahwa://reset-password"

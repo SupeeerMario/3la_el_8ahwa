@@ -490,3 +490,141 @@ class EmailUniquenessTests(APITestCase):
         resp = self.client.post("/users/password_reset/", {"email": "unreachable@example.com"})
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(len(mail.outbox), 0)
+
+
+class AvatarTests(APITestCase):
+    """Covers the Cloudinary signed-upload flow. Signing and URL building are
+    exercised for real (neither touches the network); only the destroy call,
+    which does, is patched."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="avataruser", email="av@example.com", password="tr0mbone-Vault-91"
+        )
+        self.other = User.objects.create_user(
+            username="avatarother", email="av2@example.com", password="tr0mbone-Vault-91"
+        )
+
+    def test_signature_requires_authentication(self):
+        resp = self.client.post("/users/avatar_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_signature_is_503_when_cloudinary_is_unconfigured(self):
+        from django.test import override_settings
+
+        self.client.force_authenticate(self.user)
+        with override_settings(CLOUDINARY_URL=""):
+            resp = self.client.post("/users/avatar_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(resp.data["code"], "avatar_storage_unconfigured")
+
+    def test_signature_pins_the_public_id_to_the_requesting_user(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.post("/users/avatar_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["params"]["public_id"], f"avatars/{self.user.id}")
+
+    def test_two_users_get_different_public_ids(self):
+        self.client.force_authenticate(self.user)
+        mine = self.client.post("/users/avatar_upload_signature/").data
+        self.client.force_authenticate(self.other)
+        theirs = self.client.post("/users/avatar_upload_signature/").data
+        self.assertNotEqual(mine["params"]["public_id"], theirs["params"]["public_id"])
+        self.assertNotEqual(mine["signature"], theirs["signature"])
+
+    def test_the_signature_covers_the_public_id(self):
+        from cloudinary.utils import api_sign_request
+        from django.conf import settings
+        import cloudinary
+
+        self.client.force_authenticate(self.user)
+        issued = self.client.post("/users/avatar_upload_signature/").data
+
+        cloudinary.config(cloudinary_url=settings.CLOUDINARY_URL, secure=True)
+        secret = cloudinary.config().api_secret
+
+        tampered = dict(issued["params"])
+        tampered["public_id"] = f"avatars/{self.other.id}"
+        self.assertNotEqual(
+            api_sign_request(tampered, secret), issued["signature"]
+        )
+
+    def test_avatar_url_is_null_before_any_upload(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.get("/users/get_profile/")
+        self.assertIsNone(resp.data["avatar_url"])
+
+    def test_confirming_a_version_produces_a_resized_url(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.post("/users/avatar/", {"version": 1785171939})
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        url = resp.data["avatar_url"]
+        self.assertIn(f"avatars/{self.user.id}", url)
+        self.assertIn("v1785171939", url)
+        self.assertIn("w_256", url)
+        self.assertIn("h_256", url)
+
+    def test_a_new_version_busts_the_old_url(self):
+        self.client.force_authenticate(self.user)
+        first = self.client.post("/users/avatar/", {"version": 111}).data["avatar_url"]
+        second = self.client.post("/users/avatar/", {"version": 222}).data["avatar_url"]
+        self.assertNotEqual(first, second)
+
+    def test_confirm_rejects_a_missing_version(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.post("/users/avatar/", {})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "missing_field")
+
+    def test_confirm_rejects_a_non_numeric_version(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.post("/users/avatar/", {"version": "latest"})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_confirm_requires_authentication(self):
+        resp = self.client.post("/users/avatar/", {"version": 111})
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_deleting_an_avatar_clears_it(self):
+        from unittest.mock import patch
+
+        self.client.force_authenticate(self.user)
+        self.client.post("/users/avatar/", {"version": 111})
+
+        with patch("core.storage.destroy_avatar") as destroyed:
+            resp = self.client.delete("/users/avatar/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIsNone(resp.data["avatar_url"])
+        destroyed.assert_called_once_with(self.user.id)
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.avatar_version)
+
+    def test_deleting_when_there_is_no_avatar_calls_nothing(self):
+        from unittest.mock import patch
+
+        self.client.force_authenticate(self.user)
+        with patch("core.storage.destroy_avatar") as destroyed:
+            resp = self.client.delete("/users/avatar/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        destroyed.assert_not_called()
+
+    def test_update_profile_cannot_write_the_avatar_version(self):
+        self.client.force_authenticate(self.user)
+        self.client.put("/users/update_profile/", {"avatar_version": 999})
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.avatar_version)
+
+    def test_a_members_avatar_appears_on_the_group_roster(self):
+        from groups.models import Group, GroupMember
+
+        group = Group.objects.create(name="Av", created_by=self.user)
+        GroupMember.objects.create(group=group, user=self.user, role="admin")
+        GroupMember.objects.create(group=group, user=self.other, role="member")
+
+        self.client.force_authenticate(self.user)
+        self.client.post("/users/avatar/", {"version": 333})
+
+        resp = self.client.get(f"/groups/{group.id}/list_group_members/")
+        urls = {row["user"]["id"]: row["user"]["avatar_url"] for row in resp.data["members"]}
+        self.assertIn("v333", urls[self.user.id])
+        self.assertIsNone(urls[self.other.id])
