@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import IntegrityError, transaction
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from core import errors
@@ -30,6 +31,9 @@ def _blacklist_outstanding_tokens(user):
         BlacklistedToken.objects.get_or_create(token=token)
 
 
+EMAIL_TAKEN_MESSAGE = "This email is already in use"
+
+
 class UserViewSet(viewsets.ViewSet):
 
     @action(
@@ -41,7 +45,17 @@ class UserViewSet(viewsets.ViewSet):
     def register(self ,request):
         seriailizer = UserRegisterSerializer(data = request.data)
         seriailizer.is_valid(raise_exception=True)
-        user = seriailizer.save()
+
+        try:
+            with transaction.atomic():
+                user = seriailizer.save()
+        except IntegrityError:
+            return error_response(
+                errors.EMAIL_TAKEN,
+                EMAIL_TAKEN_MESSAGE,
+                status.HTTP_400_BAD_REQUEST
+            )
+
         return Response({
             'message':'User created successfully',
             'user':UserSeriailizer(user).data,
@@ -94,7 +108,17 @@ class UserViewSet(viewsets.ViewSet):
             partial = True
         )
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+
+        try:
+            with transaction.atomic():
+                serializer.save()
+        except IntegrityError:
+            return error_response(
+                errors.EMAIL_TAKEN,
+                EMAIL_TAKEN_MESSAGE,
+                status.HTTP_400_BAD_REQUEST
+            )
+
         return Response(serializer.data)
 
 

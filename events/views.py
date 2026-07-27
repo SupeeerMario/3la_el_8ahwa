@@ -6,7 +6,8 @@ from rest_framework import status
 from .models import Event, EventLocation, LocationVote
 from .serializers import EventSerializer,EventDetailSerializer,EventLoctionsSerializer ,EventLoctionsDetailsSerializer, LocationVoteSerializer
 from groups.models import GroupMember
-from rest_framework.exceptions import PermissionDenied
+from core import errors
+from core.errors import error_response
 from core.permissions import IsEventCreator, IsLocationProposer
 
 # Create your views here.
@@ -56,7 +57,11 @@ class EventViewSet(ModelViewSet):
         ).exists()
 
         if not is_member:
-            raise PermissionDenied('You are not a member of this group')
+            return error_response(
+                errors.NOT_A_MEMBER,
+                'You are not a member of this group',
+                status.HTTP_403_FORBIDDEN
+            )
         
         
         serializer = self.get_serializer(data = request.data)
@@ -108,9 +113,10 @@ class EventLocationViewSet(ModelViewSet):
             event = Event.objects.get(id = event_id)
 
         except Event.DoesNotExist:
-            return Response(
-                {'error':'Event not found'},
-                status=status.HTTP_404_NOT_FOUND
+            return error_response(
+                errors.EVENT_NOT_FOUND,
+                'Event not found',
+                status.HTTP_404_NOT_FOUND
             )
         
 
@@ -120,13 +126,18 @@ class EventLocationViewSet(ModelViewSet):
         ).exists()
 
         if not is_member:
-            raise PermissionDenied('You are not a member of this group')
+            return error_response(
+                errors.NOT_A_MEMBER,
+                'You are not a member of this group',
+                status.HTTP_403_FORBIDDEN
+            )
         
 
         if event.active or event.finished:
-            return Response(
-                {'error':'Voting is closed for this event'},
-                status=status.HTTP_400_BAD_REQUEST
+            return error_response(
+                errors.VOTING_CLOSED,
+                'Voting is closed for this event',
+                status.HTTP_400_BAD_REQUEST
             )
         
 

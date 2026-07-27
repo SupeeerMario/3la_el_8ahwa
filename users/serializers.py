@@ -20,6 +20,9 @@ class PublicUserSerializer(serializers.ModelSerializer):
 
 
 def _reject_duplicate_email(email, exclude_pk = None):
+    if not email:
+        return email
+
     taken = User.objects.filter(email__iexact = email)
     if exclude_pk is not None:
         taken = taken.exclude(pk = exclude_pk)
@@ -48,6 +51,7 @@ class UserSeriailizer(serializers.ModelSerializer):
 
 class UserRegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only = True)
+    email = serializers.EmailField(required = True)
 
     class Meta :
         model = User

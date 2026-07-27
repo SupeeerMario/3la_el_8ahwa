@@ -417,3 +417,76 @@ class ProfileShapeTests(APITestCase):
         resp = self.client.get("/users/get_profile/")
         self.assertEqual(resp.data["email"], "shape@example.com")
         self.assertEqual(resp.data["display_name"], "Shape")
+
+
+class EmailUniquenessTests(APITestCase):
+    """The database, not just the serializer, now enforces one account per
+    email address -- case-insensitively, and only for addresses that exist."""
+
+    def test_the_database_rejects_a_case_variant_duplicate(self):
+        from django.db import IntegrityError, transaction
+
+        User.objects.create_user(
+            username="cione", email="Dup@Example.com", password="tr0mbone-Vault-91"
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                User.objects.create_user(
+                    username="citwo", email="dup@example.com", password="tr0mbone-Vault-91"
+                )
+
+    def test_several_accounts_may_have_no_email(self):
+        first = User.objects.create_user(username="noemail1", password="tr0mbone-Vault-91")
+        second = User.objects.create_user(username="noemail2", password="tr0mbone-Vault-91")
+        self.assertIsNone(first.email)
+        self.assertIsNone(second.email)
+
+    def test_a_blank_email_is_stored_as_null(self):
+        user = User.objects.create_user(
+            username="blank", email="", password="tr0mbone-Vault-91"
+        )
+        user.refresh_from_db()
+        self.assertIsNone(user.email)
+
+    def test_registration_now_requires_an_email(self):
+        resp = self.client.post("/users/register/", {
+            "username": "noaddress", "password": "tr0mbone-Vault-91",
+        })
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("email", resp.data)
+
+    def test_registration_rejects_a_case_variant_of_a_taken_email(self):
+        User.objects.create_user(
+            username="holder", email="holder@example.com", password="tr0mbone-Vault-91"
+        )
+        resp = self.client.post("/users/register/", {
+            "username": "usurper",
+            "email": "HOLDER@Example.com",
+            "password": "tr0mbone-Vault-91",
+        })
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_clearing_your_email_frees_it_for_someone_else(self):
+        holder = User.objects.create_user(
+            username="releaser", email="freed@example.com", password="tr0mbone-Vault-91"
+        )
+        taker = User.objects.create_user(
+            username="taker", password="tr0mbone-Vault-91"
+        )
+
+        self.client.force_authenticate(holder)
+        self.client.put("/users/update_profile/", {"email": ""})
+
+        self.client.force_authenticate(taker)
+        resp = self.client.put("/users/update_profile/", {"email": "freed@example.com"})
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        taker.refresh_from_db()
+        self.assertEqual(taker.email, "freed@example.com")
+
+    def test_an_account_without_an_email_cannot_be_reset(self):
+        from django.core import mail
+
+        User.objects.create_user(username="unreachable", password="tr0mbone-Vault-91")
+        resp = self.client.post("/users/password_reset/", {"email": "unreachable@example.com"})
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 0)

@@ -14,6 +14,9 @@ CANNOT_TARGET_SELF = "cannot_target_self"
 LAST_ADMIN = "last_admin"
 INVALID_ROLE = "invalid_role"
 
+EVENT_NOT_FOUND = "event_not_found"
+VOTING_CLOSED = "voting_closed"
+
 USER_NOT_FOUND = "user_not_found"
 INVITE_PENDING = "invite_pending"
 INVITE_NOT_FOUND = "invite_not_found"
@@ -27,6 +30,7 @@ INVITE_TOKEN_REVOKED = "invite_token_revoked"
 
 INVALID_RESET_TOKEN = "invalid_reset_token"
 INCORRECT_PASSWORD = "incorrect_password"
+EMAIL_TAKEN = "email_taken"
 
 MISSING_FIELD = "missing_field"
 
