@@ -1,5 +1,6 @@
 asgiref==3.11.1
 cffi==2.0.0
+cloudinary==1.44.1
 cryptography==48.0.0
 Django==6.0.2
 djangorestframework==3.16.1

@@ -13,3 +13,6 @@ __pycache__/
 .dockerignore
 CLAUDE.md
 .claude
+
+# Service-account keys and other mounted secrets -- never commit
+secrets/

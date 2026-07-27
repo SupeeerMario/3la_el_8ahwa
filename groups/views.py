@@ -1,24 +1,56 @@
+from datetime import timedelta
+
 from django.shortcuts import render
 from rest_framework.response import Response
-from rest_framework.viewsets import ModelViewSet
-from .models import Group, GroupMember,GroupInvitaion
-from .serializers import GroupSerializer, GroupMemberSerializer, GroupInvitaionSerializer
+from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
+from .models import Group, GroupMember,GroupInvitaion, GroupInviteToken
+from .serializers import (
+    GroupSerializer,
+    GroupMemberSerializer,
+    GroupInvitaionSerializer,
+    GroupInviteTokenSerializer,
+)
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework import status
 from django.db import transaction
 from django.db.models import Count
 from django.contrib.auth import get_user_model
+from django.utils import timezone
+from core import errors
+from core.errors import error_response
 from core.permissions import IsGroupAdmin
 # Create your views here.
+
+
+DEFAULT_INVITE_TOKEN_HOURS = 168
+MAX_INVITE_TOKEN_HOURS = 720
+
+
+def _as_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class GroupsViewSet(ModelViewSet):
     serializer_class = GroupSerializer
     permission_classes = [IsAuthenticated]
+    lookup_value_regex = "[0-9]+"
 
     def get_permissions(self):
-        if self.action in ("update", "partial_update", "destroy"):
+        if self.action in (
+            "update",
+            "partial_update",
+            "destroy",
+            "update_group",
+            "delete_group",
+            "remove_member",
+            "change_role",
+            "invite_tokens",
+            "revoke_invite_token",
+        ):
             return [IsAuthenticated(), IsGroupAdmin()]
         return super().get_permissions()
 
@@ -34,12 +66,7 @@ class GroupsViewSet(ModelViewSet):
             permission_classes = [IsAuthenticated]
     )
     def my_groups(self,request):
-        current_user = request.user
-        member_group_ids = GroupMember.objects.filter(user = current_user).values_list('group_id', flat=True)
-        queryset = self.get_queryset().filter(id__in=member_group_ids)
-        serializer = self.get_serializer(queryset, many = True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
+        return self.list(request)
 
 
     def perform_create(self, serializer):
@@ -61,18 +88,20 @@ class GroupsViewSet(ModelViewSet):
                 group = Group.objects.select_for_update().get(pk=pk)
 
             except Group.DoesNotExist:
-                return Response(
-                    {'error':'Group not found'},
-                    status=status.HTTP_404_NOT_FOUND
+                return error_response(
+                    errors.GROUP_NOT_FOUND,
+                    'Group not found',
+                    status.HTTP_404_NOT_FOUND
                 )
 
             try:
                 membreship = GroupMember.objects.get(user = current_user, group=group)
 
             except GroupMember.DoesNotExist:
-                return Response(
-                    {'error':'You are not a member of this group'},
-                    status=status.HTTP_400_BAD_REQUEST
+                return error_response(
+                    errors.NOT_A_MEMBER,
+                    'You are not a member of this group',
+                    status.HTTP_400_BAD_REQUEST
                 )
 
             was_admin = membreship.role == "admin"
@@ -109,36 +138,7 @@ class GroupsViewSet(ModelViewSet):
         permission_classes = [IsAuthenticated]
     )
     def update_group(self, request, pk=None):
-        current_user = request.user
-        
-        try:
-            group = Group.objects.get(pk=pk)
-        
-        except Group.DoesNotExist:
-            return Response(
-                {'error':'Group not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        is_admin = GroupMember.objects.filter(
-            user = current_user,
-            group = group,
-            role = 'admin'
-        ).exists()
-
-        if not is_admin:
-            return Response(
-                {'error':'ermission denied. You must be an admin of this group to delete it'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        serializer = self.get_serializer(instance = group, data = request.data, partial = True)
-        serializer.is_valid(raise_exception = True)
-        serializer.save()
-        return Response(
-            {'message':'Group has been updated'},
-            status=status.HTTP_200_OK
-        )
+        return self.partial_update(request, pk=pk)
 
 
     @action(
@@ -147,36 +147,8 @@ class GroupsViewSet(ModelViewSet):
         permission_classes = [IsAuthenticated]
     )
     def delete_group(self, request, pk=None):
-        current_user = request.user
-        
-        try:
-            group = Group.objects.get(pk=pk)
-        
-        except Group.DoesNotExist:
-            return Response(
-                {'error':'Group not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        is_admin = GroupMember.objects.filter(
-            user = current_user,
-            group = group,
-            role = 'admin'
-        ).exists()
+        return self.destroy(request, pk=pk)
 
-        
-        if is_admin:
-            group.delete()
-            return Response(
-                {'message':'Group deleted successfully'},
-                status=status.HTTP_200_OK
-            )
-        else:
-            return Response(
-                {'error':'Permission denied. You must be an admin of this group to delete it'}, 
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
 
     @action(
         detail=True,
@@ -184,27 +156,9 @@ class GroupsViewSet(ModelViewSet):
         permission_classes = [IsAuthenticated]
     )
     def list_group_members(self,request,pk=None):
-        current_user = request.user
+        group = self.get_object()
 
-        try:
-            group = Group.objects.get(pk=pk)
-        
-        except Group.DoesNotExist:
-            return Response(
-                {'error':'Group not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        try:
-            membership = GroupMember.objects.get(user = current_user, group=group)
-        
-        except GroupMember.DoesNotExist:
-            return Response(
-                {'error':'You are not a member of this group'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        group_members = GroupMember.objects.filter(group = group)
+        group_members = GroupMember.objects.filter(group = group).select_related("user")
         serializer = GroupMemberSerializer(group_members, many = True)
 
         return Response(
@@ -215,14 +169,288 @@ class GroupsViewSet(ModelViewSet):
         )
 
 
+    @action(
+        detail=True,
+        methods=['POST'],
+        permission_classes = [IsAuthenticated]
+    )
+    def remove_member(self, request, pk=None):
+        group = self.get_object()
+        user_id = _as_int(request.data.get('user_id'))
+
+        if user_id is None:
+            return error_response(
+                errors.MISSING_FIELD,
+                'user_id is required and must be numeric',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        if user_id == request.user.id:
+            return error_response(
+                errors.CANNOT_TARGET_SELF,
+                'Use leave_group to remove yourself from a group',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            membership = GroupMember.objects.get(group = group, user_id = user_id)
+
+        except GroupMember.DoesNotExist:
+            return error_response(
+                errors.MEMBER_NOT_FOUND,
+                'That user is not a member of this group',
+                status.HTTP_404_NOT_FOUND
+            )
+
+        membership.delete()
+
+        return Response(
+            {'message': 'Member removed from the group'},
+            status=status.HTTP_200_OK
+        )
 
 
+    @action(
+        detail=True,
+        methods=['POST'],
+        permission_classes = [IsAuthenticated]
+    )
+    def change_role(self, request, pk=None):
+        group = self.get_object()
+        user_id = _as_int(request.data.get('user_id'))
+        role = request.data.get('role')
 
-class GroupInvitationViewSet(ModelViewSet):
+        if user_id is None:
+            return error_response(
+                errors.MISSING_FIELD,
+                'user_id is required and must be numeric',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        if role not in dict(GroupMember.ROLE_CHOICES):
+            return error_response(
+                errors.INVALID_ROLE,
+                'role must be admin or member',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        with transaction.atomic():
+            try:
+                membership = GroupMember.objects.select_for_update().get(
+                    group = group, user_id = user_id
+                )
+
+            except GroupMember.DoesNotExist:
+                return error_response(
+                    errors.MEMBER_NOT_FOUND,
+                    'That user is not a member of this group',
+                    status.HTTP_404_NOT_FOUND
+                )
+
+            if membership.role == role:
+                return Response(
+                    GroupMemberSerializer(membership).data,
+                    status=status.HTTP_200_OK
+                )
+
+            demoting_last_admin = (
+                membership.role == "admin"
+                and role != "admin"
+                and not GroupMember.objects.filter(group = group, role = "admin")
+                .exclude(pk = membership.pk)
+                .exists()
+            )
+
+            if demoting_last_admin:
+                return error_response(
+                    errors.LAST_ADMIN,
+                    'A group must keep at least one admin',
+                    status.HTTP_400_BAD_REQUEST
+                )
+
+            membership.role = role
+            membership.save(update_fields=["role"])
+
+        return Response(
+            GroupMemberSerializer(membership).data,
+            status=status.HTTP_200_OK
+        )
+
+
+    @action(
+        detail=True,
+        methods=['GET', 'POST'],
+        permission_classes = [IsAuthenticated]
+    )
+    def invite_tokens(self, request, pk=None):
+        group = self.get_object()
+
+        if request.method == 'GET':
+            tokens = GroupInviteToken.objects.filter(
+                group = group, revoked = False, expires_at__gt = timezone.now()
+            ).select_related("group", "created_by")
+            return Response(
+                {'invite_tokens': GroupInviteTokenSerializer(tokens, many = True).data},
+                status=status.HTTP_200_OK
+            )
+
+        hours = _as_int(request.data.get('expires_in_hours', DEFAULT_INVITE_TOKEN_HOURS))
+        max_uses = request.data.get('max_uses')
+
+        if hours is None or hours < 1 or hours > MAX_INVITE_TOKEN_HOURS:
+            return error_response(
+                errors.VALIDATION_ERROR,
+                f'expires_in_hours must be between 1 and {MAX_INVITE_TOKEN_HOURS}',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        if max_uses is not None:
+            max_uses = _as_int(max_uses)
+            if max_uses is None or max_uses < 1:
+                return error_response(
+                    errors.VALIDATION_ERROR,
+                    'max_uses must be a positive integer when supplied',
+                    status.HTTP_400_BAD_REQUEST
+                )
+
+        invite_token = GroupInviteToken.objects.create(
+            group = group,
+            created_by = request.user,
+            expires_at = timezone.now() + timedelta(hours = hours),
+            max_uses = max_uses
+        )
+
+        return Response(
+            GroupInviteTokenSerializer(invite_token).data,
+            status=status.HTTP_201_CREATED
+        )
+
+
+    @action(
+        detail=True,
+        methods=['POST'],
+        permission_classes = [IsAuthenticated]
+    )
+    def revoke_invite_token(self, request, pk=None):
+        group = self.get_object()
+        token_id = _as_int(request.data.get('token_id'))
+
+        if token_id is None:
+            return error_response(
+                errors.MISSING_FIELD,
+                'token_id is required and must be numeric',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            invite_token = GroupInviteToken.objects.get(pk = token_id, group = group)
+
+        except GroupInviteToken.DoesNotExist:
+            return error_response(
+                errors.INVITE_TOKEN_NOT_FOUND,
+                'Invite token not found for this group',
+                status.HTTP_404_NOT_FOUND
+            )
+
+        invite_token.revoked = True
+        invite_token.save(update_fields=["revoked"])
+
+        return Response(
+            {'message': 'Invite token revoked'},
+            status=status.HTTP_200_OK
+        )
+
+
+    @action(
+        detail=False,
+        methods=['POST'],
+        permission_classes = [IsAuthenticated]
+    )
+    def join(self, request):
+        raw_token = request.data.get('token')
+
+        if not raw_token:
+            return error_response(
+                errors.MISSING_FIELD,
+                'token is required',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        with transaction.atomic():
+            try:
+                invite_token = GroupInviteToken.objects.select_for_update().get(
+                    token = raw_token
+                )
+
+            except GroupInviteToken.DoesNotExist:
+                return error_response(
+                    errors.INVITE_TOKEN_NOT_FOUND,
+                    'This invite link is not valid',
+                    status.HTTP_404_NOT_FOUND
+                )
+
+            if invite_token.revoked:
+                return error_response(
+                    errors.INVITE_TOKEN_REVOKED,
+                    'This invite link has been revoked',
+                    status.HTTP_400_BAD_REQUEST
+                )
+
+            if invite_token.is_expired:
+                return error_response(
+                    errors.INVITE_TOKEN_EXPIRED,
+                    'This invite link has expired',
+                    status.HTTP_400_BAD_REQUEST
+                )
+
+            if invite_token.is_exhausted:
+                return error_response(
+                    errors.INVITE_TOKEN_EXHAUSTED,
+                    'This invite link has already been used the maximum number of times',
+                    status.HTTP_400_BAD_REQUEST
+                )
+
+            group = invite_token.group
+
+            if GroupMember.objects.filter(user = request.user, group = group).exists():
+                return error_response(
+                    errors.ALREADY_MEMBER,
+                    'You are already a member of this group',
+                    status.HTTP_400_BAD_REQUEST
+                )
+
+            GroupMember.objects.create(user = request.user, group = group, role = "member")
+
+            invite_token.uses += 1
+            invite_token.save(update_fields=["uses"])
+
+            GroupInvitaion.objects.filter(
+                group = group, invited_user = request.user
+            ).delete()
+
+        joined = Group.objects.filter(pk = group.pk).annotate(
+            members_count = Count('members')
+        ).first()
+
+        return Response(
+            {'message': f'Sucessfully joined {group.name}',
+             'group': GroupSerializer(joined).data
+             },
+            status=status.HTTP_201_CREATED
+        )
+
+
+class GroupInvitationViewSet(ReadOnlyModelViewSet):
 
 
     serializer_class = GroupInvitaionSerializer
     permission_classes = [IsAuthenticated]
+    lookup_value_regex = "[0-9]+"
+
+    def get_queryset(self):
+        return GroupInvitaion.objects.filter(
+            invited_user = self.request.user
+        ).select_related("group", "invited_by", "invited_user")
 
     @action(
             detail=False,
@@ -230,8 +458,18 @@ class GroupInvitationViewSet(ModelViewSet):
             permission_classes = [IsAuthenticated]
     )
     def show_all_invitations(self,request):
-        current_user = request.user
-        invitaitons  = GroupInvitaion.objects.filter(invited_user = current_user)
+        requested_status = request.query_params.get('status', 'pending')
+        invitaitons = self.get_queryset()
+
+        if requested_status != 'all':
+            if requested_status not in dict(GroupInvitaion.STATUS_CHOICES):
+                return error_response(
+                    errors.VALIDATION_ERROR,
+                    'status must be pending, accepted, rejected or all',
+                    status.HTTP_400_BAD_REQUEST
+                )
+            invitaitons = invitaitons.filter(status = requested_status)
+
         serializer = GroupInvitaionSerializer(invitaitons, many = True)
         return Response(
             {'message':'here are all your invites',
@@ -248,23 +486,32 @@ class GroupInvitationViewSet(ModelViewSet):
     )
     def send_invite(self, request):
         current_user = request.user
-        group_id = request.data.get('group_id')
+        group_id = _as_int(request.data.get('group_id'))
         username_to_invite = request.data.get('username_to_invite')
+
+        if group_id is None:
+            return error_response(
+                errors.MISSING_FIELD,
+                'group_id is required and must be numeric',
+                status.HTTP_400_BAD_REQUEST
+            )
 
         try:
             group = Group.objects.get(id = group_id)
         except Group.DoesNotExist:
-            return Response(
-                {'error':'Group not found'},
-                status=status.HTTP_404_NOT_FOUND
+            return error_response(
+                errors.GROUP_NOT_FOUND,
+                'Group not found',
+                status.HTTP_404_NOT_FOUND
             )
-        
+
         is_admin = GroupMember.objects.filter(user = current_user, group = group, role = 'admin').exists()
 
         if not is_admin:
-            return Response(
-                {'error':'only admins can send invites'},
-                status=status.HTTP_403_FORBIDDEN
+            return error_response(
+                errors.NOT_ADMIN,
+                'only admins can send invites',
+                status.HTTP_403_FORBIDDEN
             )
 
 
@@ -272,19 +519,21 @@ class GroupInvitationViewSet(ModelViewSet):
 
         try:
             invited_user = user_model.objects.get(username = username_to_invite)
-        
+
         except user_model.DoesNotExist:
-            return Response(
-                {'error':f'{username_to_invite} not found'},
-                status=status.HTTP_404_NOT_FOUND
+            return error_response(
+                errors.USER_NOT_FOUND,
+                f'{username_to_invite} not found',
+                status.HTTP_404_NOT_FOUND
             )
-        
+
         if GroupMember.objects.filter(user = invited_user, group = group).exists():
-            return Response(
-                {'error':f'{username_to_invite} is already a member of this group'},
-                status=status.HTTP_400_BAD_REQUEST
+            return error_response(
+                errors.ALREADY_MEMBER,
+                f'{username_to_invite} is already a member of this group',
+                status.HTTP_400_BAD_REQUEST
             )
-        
+
 
         invitaion, created = GroupInvitaion.objects.get_or_create(
             group=group,
@@ -294,11 +543,12 @@ class GroupInvitationViewSet(ModelViewSet):
 
         if not created:
             if invitaion.status == 'pending':
-                return Response(
-                    {'error':'An invitaion is already pending'},
-                    status=status.HTTP_400_BAD_REQUEST
+                return error_response(
+                    errors.INVITE_PENDING,
+                    'An invitaion is already pending',
+                    status.HTTP_400_BAD_REQUEST
                 )
-            
+
             invitaion.status = 'pending'
             invitaion.invited_by = current_user
             invitaion.save()
@@ -311,9 +561,8 @@ class GroupInvitationViewSet(ModelViewSet):
              },
             status=status.HTTP_201_CREATED,
         )
-    
 
-    
+
 
 
 
@@ -327,25 +576,17 @@ class GroupInvitationViewSet(ModelViewSet):
         invite_action = request.data.get('action')
 
 
-        if invite_action not in ['accept', 'reject']:
-            return Response(
-                {'error':'Invalid action, must be accepted or rejected'},
-                status= status.HTTP_400_BAD_REQUEST
-            )
-        
-
-        if invite_action == 'accept':
+        if invite_action in ('accept', 'accepted'):
             return self.accept_invite(request, pk)
-        
-        else:
+
+        if invite_action in ('reject', 'rejected'):
             return self.decline_invite(request, pk)
 
-
-        
-        
-
-
-
+        return error_response(
+            errors.INVALID_INVITE_ACTION,
+            'Invalid action, must be accept or reject',
+            status.HTTP_400_BAD_REQUEST
+        )
 
 
     @action(
@@ -356,29 +597,32 @@ class GroupInvitationViewSet(ModelViewSet):
     def accept_invite(self, request, pk=None):
         current_user = request.user
 
-        try:
-            invitaion = GroupInvitaion.objects.get(pk=pk, invited_user = current_user, status = 'pending')
-        
-        except GroupInvitaion.DoesNotExist:
+        with transaction.atomic():
+            try:
+                invitaion = GroupInvitaion.objects.select_for_update().get(
+                    pk=pk, invited_user = current_user, status = 'pending'
+                )
 
-            return Response(
-                {'error':'pending invitaion not found, or you are not authiriozed to repond'},
-                status=status.HTTP_404_NOT_FOUND
+            except GroupInvitaion.DoesNotExist:
+
+                return error_response(
+                    errors.INVITE_NOT_FOUND,
+                    'pending invitaion not found, or you are not authiriozed to repond',
+                    status.HTTP_404_NOT_FOUND
+                )
+
+            group = invitaion.group
+
+            GroupMember.objects.get_or_create(
+                user = current_user,
+                group = group,
+                defaults={'role':'member'}
             )
-        
-        invitaion.status = 'accepted'
-        invitaion.save()
 
-        GroupMember.objects.get_or_create(
-            user = request.user,
-            group = invitaion.group,
-            defaults={'role':'member'}
-        )
-
-        invitaion.delete()
+            invitaion.delete()
 
         return Response(
-            {'message':f'Sucessfully joined {invitaion.group.name}'},
+            {'message':f'Sucessfully joined {group.name}'},
             status=status.HTTP_200_OK
         )
 
@@ -395,14 +639,15 @@ class GroupInvitationViewSet(ModelViewSet):
 
         try:
             invitaion = GroupInvitaion.objects.get(pk=pk, invited_user = current_user, status = 'pending')
-        
+
         except GroupInvitaion.DoesNotExist:
 
-            return Response(
-                {'error':'pending invitaion not found, or you are not authiriozed to repond'},
-                status=status.HTTP_404_NOT_FOUND
+            return error_response(
+                errors.INVITE_NOT_FOUND,
+                'pending invitaion not found, or you are not authiriozed to repond',
+                status.HTTP_404_NOT_FOUND
             )
-        
+
         invitaion.status = 'rejected'
         invitaion.save()
 
@@ -410,4 +655,23 @@ class GroupInvitationViewSet(ModelViewSet):
             {'message':'invitaion declined sucessfully'},
             status=status.HTTP_200_OK
         )
-        
+
+
+    @action(
+        detail=True,
+        methods=['DELETE'],
+        permission_classes = [IsAuthenticated]
+    )
+    def dismiss(self, request, pk=None):
+        invitaion = self.get_object()
+
+        if invitaion.status == 'pending':
+            return error_response(
+                errors.INVITE_NOT_DISMISSABLE,
+                'Respond to a pending invitation before dismissing it',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        invitaion.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
