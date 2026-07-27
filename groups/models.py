@@ -1,8 +1,15 @@
+import secrets
+
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 # Create your models here.
 
 User = settings.AUTH_USER_MODEL
+
+
+def generate_invite_token():
+    return secrets.token_urlsafe(32)
 
 class Group(models.Model):
     name = models.CharField(max_length=50)
@@ -65,3 +72,33 @@ class GroupInvitaion(models.Model):
 
     def __str__(self):
         return f"{self.invited_user} is invited by {self.invited_by} to {self.group} group, invitaion status is {self.status}"
+
+
+class GroupInviteToken(models.Model):
+
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="invite_tokens")
+
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_invite_tokens")
+
+    token = models.CharField(max_length=64, unique=True, default=generate_invite_token)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    expires_at = models.DateTimeField()
+
+    max_uses = models.PositiveIntegerField(null=True, blank=True)
+
+    uses = models.PositiveIntegerField(default=0)
+
+    revoked = models.BooleanField(default=False)
+
+    @property
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    @property
+    def is_exhausted(self):
+        return self.max_uses is not None and self.uses >= self.max_uses
+
+    def __str__(self):
+        return f"invite token for {self.group} created by {self.created_by}"

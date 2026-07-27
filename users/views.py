@@ -1,8 +1,19 @@
-from rest_framework.permissions import IsAuthenticated, AllowAny  
+from django.conf import settings
+from django.core.mail import send_mail
+from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from core import errors
+from core.errors import error_response
 from rest_framework.response import Response
 from rest_framework.decorators import action
-from .models import User
-from .serializers import UserSeriailizer, UserRegisterSerializer, UserLoginSerializer
+from .serializers import (
+    ChangePasswordSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
+    UserSeriailizer,
+    UserRegisterSerializer,
+    UserLoginSerializer,
+)
 from rest_framework import viewsets, status
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.token_blacklist.models import (
@@ -12,6 +23,12 @@ from rest_framework_simplejwt.token_blacklist.models import (
 
 
 # Create your views here.
+
+
+def _blacklist_outstanding_tokens(user):
+    for token in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=token)
+
 
 class UserViewSet(viewsets.ViewSet):
 
@@ -41,10 +58,18 @@ class UserViewSet(viewsets.ViewSet):
             authentication_classes = []
     )
     def login(self, request):
-        
+
         seriailizer = UserLoginSerializer(data= request.data)
         seriailizer.is_valid(raise_exception= True)
         user = seriailizer.validated_data["user"]
+
+        if user is None:
+            return error_response(
+                errors.INVALID_CREDENTIALS,
+                "Invalid credentials",
+                status.HTTP_400_BAD_REQUEST
+            )
+
         refresh = RefreshToken.for_user(user)
         return Response({
             "user": UserSeriailizer(user).data,
@@ -54,7 +79,7 @@ class UserViewSet(viewsets.ViewSet):
 
 
 
-    
+
     # can't update the password
     @action(
             detail=False,
@@ -74,8 +99,91 @@ class UserViewSet(viewsets.ViewSet):
 
 
 
+    @action(
+            detail=False,
+            methods=["POST"],
+            permission_classes = [IsAuthenticated]
+    )
+    def change_password(self, request):
+        serializer = ChangePasswordSerializer(
+            data = request.data,
+            context = {"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        _blacklist_outstanding_tokens(user)
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            "message": "Password changed successfully",
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+        })
 
-    
+
+
+    @action(
+            detail=False,
+            methods=["POST"],
+            permission_classes = [AllowAny],
+            authentication_classes = [],
+            url_path="password_reset"
+    )
+    def password_reset(self, request):
+        serializer = PasswordResetRequestSerializer(data = request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.get_user()
+
+        if user is not None:
+            uid = serializer.uid_for(user)
+            token = serializer.token_for(user)
+            link = f"{settings.PASSWORD_RESET_DEEP_LINK}?uid={uid}&token={token}"
+            send_mail(
+                subject="Reset your 3la el 8ahwa password",
+                message=(
+                    f"Open this link to choose a new password:\n\n{link}\n\n"
+                    f"If you did not ask for this, you can ignore this email."
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=True,
+            )
+
+        return Response(
+            {"message": "If that email has an account, a reset link has been sent"},
+            status=status.HTTP_200_OK
+        )
+
+
+
+    @action(
+            detail=False,
+            methods=["POST"],
+            permission_classes = [AllowAny],
+            authentication_classes = [],
+            url_path="password_reset_confirm"
+    )
+    def password_reset_confirm(self, request):
+        serializer = PasswordResetConfirmSerializer(data = request.data)
+
+        if not serializer.is_valid():
+            if request.data.get("token") and "token" in serializer.errors:
+                return error_response(
+                    errors.INVALID_RESET_TOKEN,
+                    "This reset link is invalid or has expired",
+                    status.HTTP_400_BAD_REQUEST
+                )
+            raise ValidationError(serializer.errors)
+
+        user = serializer.save()
+        _blacklist_outstanding_tokens(user)
+        return Response(
+            {"message": "Password has been reset successfully"},
+            status=status.HTTP_200_OK
+        )
+
+
+
+
     @action(
             detail=False,
             methods=["DELETE"],
@@ -83,8 +191,7 @@ class UserViewSet(viewsets.ViewSet):
     )
     def delete_profile(self, request):
         current_user = request.user
-        for token in OutstandingToken.objects.filter(user=current_user):
-            BlacklistedToken.objects.get_or_create(token=token)
+        _blacklist_outstanding_tokens(current_user)
         current_user.delete()
         return Response(
             {"message": "Your account has been deleted successfully"},
