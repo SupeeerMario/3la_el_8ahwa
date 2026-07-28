@@ -184,6 +184,21 @@ CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "")
 AVATAR_SIGNATURE_TTL = int(os.getenv("AVATAR_SIGNATURE_TTL", "600"))
 AVATAR_RENDER_SIZE = int(os.getenv("AVATAR_RENDER_SIZE", "256"))
 
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "False") == "True"
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+WINNER_FREEZE_INTERVAL = float(os.getenv("WINNER_FREEZE_INTERVAL", "60"))
+
+CELERY_BEAT_SCHEDULE = {
+    "freeze-due-event-winners": {
+        "task": "events.freeze_due_winners",
+        "schedule": WINNER_FREEZE_INTERVAL,
+    }
+}
+
 PASSWORD_RESET_TIMEOUT = int(os.getenv("PASSWORD_RESET_TIMEOUT", "3600"))
 PASSWORD_RESET_DEEP_LINK = os.getenv(
     "PASSWORD_RESET_DEEP_LINK", "alael8ahwa://reset-password"

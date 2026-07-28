@@ -1,3 +1,4 @@
+from django.db import IntegrityError
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
@@ -5,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Event, EventLocation, LocationVote
 from .serializers import EventSerializer,EventDetailSerializer,EventLoctionsSerializer ,EventLoctionsDetailsSerializer, LocationVoteSerializer
+from .voting import tally as vote_tally, voting_open
 from groups.models import GroupMember
 from core import errors
 from core.errors import error_response
@@ -28,6 +30,7 @@ def _as_int(value):
 class EventViewSet(ModelViewSet):
 
     permission_classes = [IsAuthenticated]
+    lookup_value_regex = "[0-9]+"
 
     def get_permissions(self):
         if self.action in ("update", "partial_update", "destroy"):
@@ -73,11 +76,36 @@ class EventViewSet(ModelViewSet):
             {'message':'Event created successfully', 'event':serializer.data},
             status=status.HTTP_201_CREATED
         )
-    
+
+    @action(detail=True, methods=['get'], url_path='tally')
+    def tally(self, request, pk=None):
+        event = self.get_object()
+
+        my_vote = LocationVote.objects.filter(
+            event=event, voted_by=request.user
+        ).values_list('location_id', flat=True).first()
+
+        return Response({
+            'event': event.id,
+            'voting_open': voting_open(event),
+            'winner_frozen': event.winner_frozen,
+            'winning_location': event.winning_location_id,
+            'my_vote': my_vote,
+            'locations': [
+                {
+                    'id': location.id,
+                    'name': location.name,
+                    'vote_count': location.vote_count,
+                }
+                for location in vote_tally(event)
+            ],
+        })
+
 
 
 class EventLocationViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
+    lookup_value_regex = "[0-9]+"
 
     def get_permissions(self):
         if self.action in ("update", "partial_update", "destroy"):
@@ -89,12 +117,18 @@ class EventLocationViewSet(ModelViewSet):
             event__group__members__user = self.request.user
         )
 
+        if self.action in ('list', 'retrieve'):
+            qs = qs.select_related('proposed_by').prefetch_related('votes__voted_by')
+
+        if self.action != 'list':
+            return qs
+
         event_id = _as_int(self.request.query_params.get('event'))
 
         if not event_id:
             return qs.none()
         return qs.filter(event_id = event_id)
-    
+
 
     def get_serializer_class(self):
 
@@ -147,6 +181,68 @@ class EventLocationViewSet(ModelViewSet):
 
         return Response(
             {'message':'Location proposed successfully', 'location':serializer.data},
+            status=status.HTTP_201_CREATED
+        )
+
+    @action(detail=True, methods=['post', 'delete'], url_path='vote')
+    def vote(self, request, pk=None):
+        location = self.get_object()
+        event = location.event
+
+        if not voting_open(event):
+            return error_response(
+                errors.VOTING_CLOSED,
+                'Voting is closed for this event',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        if request.method == 'DELETE':
+            deleted, _ = LocationVote.objects.filter(
+                location=location, voted_by=request.user
+            ).delete()
+
+            if not deleted:
+                return error_response(
+                    errors.VOTE_NOT_FOUND,
+                    'You have not voted for this location',
+                    status.HTTP_404_NOT_FOUND
+                )
+
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        existing = LocationVote.objects.filter(
+            event=event, voted_by=request.user
+        ).first()
+
+        if existing is not None:
+            if existing.location_id == location.id:
+                return error_response(
+                    errors.ALREADY_VOTED,
+                    'You have already voted for this location',
+                    status.HTTP_400_BAD_REQUEST
+                )
+
+            existing.location = location
+            existing.save(update_fields=['location', 'event'])
+
+            return Response(
+                LocationVoteSerializer(existing).data,
+                status=status.HTTP_200_OK
+            )
+
+        try:
+            new_vote = LocationVote.objects.create(
+                location=location, voted_by=request.user
+            )
+        except IntegrityError:
+            return error_response(
+                errors.ALREADY_VOTED,
+                'You have already voted in this event',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response(
+            LocationVoteSerializer(new_vote).data,
             status=status.HTTP_201_CREATED
         )
 

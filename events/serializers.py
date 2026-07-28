@@ -90,7 +90,7 @@ class EventLoctionsDetailsSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_at']
 
     def get_vote_count(self, obj):
-        return obj.votes.count()
+        return len(obj.votes.all())
 
     def get_voted_by(self, obj):
         return [vote.voted_by.username for vote in obj.votes.all()]
@@ -103,9 +103,10 @@ class LocationVoteSerializer(serializers.ModelSerializer):
         model = LocationVote
         fields = [
             'id',
+            'event',
             'location',
             'voted_by',
             'created_at'
         ]
-    
-        read_only_fields = ['created_at', 'voted_by']
+
+        read_only_fields = ['created_at', 'voted_by', 'event', 'location']

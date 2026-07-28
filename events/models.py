@@ -14,6 +14,7 @@ class Event(models.Model):
     title = models.CharField(max_length = 100)
     text = models.TextField(blank = True)
     winning_location = models.ForeignKey('EventLocation', null=True, blank=True, on_delete=models.SET_NULL, related_name='won_events')
+    winner_frozen = models.BooleanField(default=False)
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add = True)
@@ -54,8 +55,24 @@ class EventLocation(models.Model):
 
 
 class LocationVote(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='votes')
     location = models.ForeignKey(EventLocation, on_delete=models.CASCADE, related_name='votes')
     voted_by = models.ForeignKey(User, on_delete=models.CASCADE)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "voted_by"],
+                name="unique_vote_per_event",
+            )
+        ]
+
+    def save(self, *args, **kwargs):
+        self.event_id = self.location.event_id
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.voted_by} voted for {self.location} in {self.event.title}'
 
 
