@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db.models import Count, Q
 
@@ -65,8 +66,13 @@ def group_standings():
         ),
     )
 
+    minimum = settings.LEADERBOARD_MIN_EVENTS
+
     rows = []
     for group in groups:
+        if group.event_count < minimum:
+            continue
+
         possible = group.member_count * group.event_count
         if possible == 0:
             continue

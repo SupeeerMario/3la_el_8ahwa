@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 from rest_framework import status
@@ -172,6 +173,7 @@ class UserBoardTests(LeaderboardBaseTests):
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
+@override_settings(LEADERBOARD_MIN_EVENTS=1)
 class GroupBoardTests(LeaderboardBaseTests):
     def setUp(self):
         self.users = [
@@ -272,3 +274,74 @@ class GroupBoardTests(LeaderboardBaseTests):
     def test_unauthenticated_is_refused(self):
         resp = self.client.get("/leaderboard/groups/")
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class GroupBoardThresholdTests(LeaderboardBaseTests):
+    """A rate is fragile at small n: without a minimum, one perfect event tops
+    the board forever."""
+
+    def setUp(self):
+        self.users = [
+            User.objects.create_user(username=f"t{i}", password="pw12345678")
+            for i in range(4)
+        ]
+
+    def _group_with(self, name, users, event_count, checkins_per_event):
+        group = self._make_group(name, users)
+        for _ in range(event_count):
+            event = self._make_event(group)
+            for user in users[:checkins_per_event]:
+                self._check_in(event, user)
+        return group
+
+    def test_a_group_below_the_minimum_is_unranked(self):
+        self._group_with("Fluke", self.users[:2], event_count=1, checkins_per_event=2)
+        self._group_with("Steady", self.users[2:4], event_count=3, checkins_per_event=1)
+
+        self.client.force_authenticate(self.users[0])
+        resp = self.client.get("/leaderboard/groups/")
+        names = [row["group"]["name"] for row in resp.data["standings"]]
+        self.assertEqual(names, ["Steady"])
+
+    def test_a_perfect_one_off_no_longer_outranks_a_long_record(self):
+        self._group_with("Fluke", self.users[:2], event_count=1, checkins_per_event=2)
+        self._group_with("Steady", self.users[2:4], event_count=4, checkins_per_event=2)
+
+        self.client.force_authenticate(self.users[0])
+        resp = self.client.get("/leaderboard/groups/")
+        top = resp.data["standings"][0]
+        self.assertEqual(top["group"]["name"], "Steady")
+        self.assertEqual(top["rate"], 1.0)
+
+    def test_reaching_the_minimum_puts_a_group_on_the_board(self):
+        group = self._group_with("Rising", self.users[:2], event_count=2, checkins_per_event=2)
+
+        self.client.force_authenticate(self.users[0])
+        before = self.client.get("/leaderboard/groups/")
+        self.assertEqual(list(before.data["standings"]), [])
+
+        third = self._make_event(group)
+        self._check_in(third, self.users[0])
+        after = self.client.get("/leaderboard/groups/")
+        self.assertEqual(
+            [row["group"]["name"] for row in after.data["standings"]], ["Rising"]
+        )
+
+    def test_the_minimum_is_configurable(self):
+        self._group_with("Fluke", self.users[:2], event_count=1, checkins_per_event=2)
+
+        self.client.force_authenticate(self.users[0])
+        with override_settings(LEADERBOARD_MIN_EVENTS=1):
+            resp = self.client.get("/leaderboard/groups/")
+        self.assertEqual(
+            [row["group"]["name"] for row in resp.data["standings"]], ["Fluke"]
+        )
+
+    def test_events_without_a_winner_do_not_count_toward_the_minimum(self):
+        group = self._make_group("Talkers", self.users[:2])
+        for _ in range(5):
+            self._make_event(group, with_winner=False)
+
+        self.client.force_authenticate(self.users[0])
+        resp = self.client.get("/leaderboard/groups/")
+        self.assertEqual(list(resp.data["standings"]), [])
