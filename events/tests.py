@@ -2,6 +2,7 @@ from datetime import timedelta
 from unittest import mock
 
 from django.db import IntegrityError, transaction
+from django.test import override_settings
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
@@ -9,7 +10,9 @@ from rest_framework import status
 
 from groups.models import Group, GroupMember
 from events.models import Event, EventLocation, LocationVote
+from events.reminders import send_due_reminders, send_reminder
 from events.voting import freeze_due_winners, freeze_winner
+from notifications.models import Notification
 
 User = get_user_model()
 
@@ -583,3 +586,114 @@ class FreezeDueWinnersTests(VotingBaseTests):
         self._start_event_now()
         self.assertEqual(freeze_due_winners(), 1)
         self.assertEqual(freeze_due_winners(), 0)
+
+
+class EventDeleteLockTests(APITestCase):
+    """The 'no deleting an event close to its start' rule, implemented in Phase 4."""
+
+    def setUp(self):
+        self.creator = User.objects.create_user(username="creator", password="pw12345678")
+        self.member = User.objects.create_user(username="member", password="pw12345678")
+        self.group = Group.objects.create(name="G", created_by=self.creator)
+        GroupMember.objects.create(group=self.group, user=self.creator, role="admin")
+        GroupMember.objects.create(group=self.group, user=self.member, role="member")
+
+    def _event(self, starts_in_minutes):
+        now = timezone.now()
+        return Event.objects.create(
+            created_by=self.creator, group=self.group, title="E",
+            start_time=now + timedelta(minutes=starts_in_minutes),
+            end_time=now + timedelta(minutes=starts_in_minutes + 120),
+        )
+
+    def test_an_event_far_from_starting_can_be_deleted(self):
+        event = self._event(starts_in_minutes=180)
+        self.client.force_authenticate(self.creator)
+        resp = self.client.delete(f"/events/{event.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Event.objects.filter(pk=event.pk).exists())
+
+    def test_an_event_starting_within_the_hour_cannot_be_deleted(self):
+        event = self._event(starts_in_minutes=30)
+        self.client.force_authenticate(self.creator)
+        resp = self.client.delete(f"/events/{event.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "event_starting_soon")
+        self.assertTrue(Event.objects.filter(pk=event.pk).exists())
+
+    def test_an_event_already_started_cannot_be_deleted(self):
+        event = self._event(starts_in_minutes=-30)
+        self.client.force_authenticate(self.creator)
+        resp = self.client.delete(f"/events/{event.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "event_starting_soon")
+
+    def test_the_lock_window_is_configurable(self):
+        event = self._event(starts_in_minutes=90)
+        self.client.force_authenticate(self.creator)
+        with override_settings(EVENT_DELETE_LOCK_MINUTES=120):
+            resp = self.client.delete(f"/events/{event.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_non_creator_is_still_refused_before_the_lock_is_considered(self):
+        event = self._event(starts_in_minutes=180)
+        self.client.force_authenticate(self.member)
+        resp = self.client.delete(f"/events/{event.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Event.objects.filter(pk=event.pk).exists())
+
+
+class EventReminderTests(APITestCase):
+    def setUp(self):
+        self.creator = User.objects.create_user(username="creator", password="pw12345678")
+        self.member = User.objects.create_user(username="member", password="pw12345678")
+        self.group = Group.objects.create(name="G", created_by=self.creator)
+        GroupMember.objects.create(group=self.group, user=self.creator, role="admin")
+        GroupMember.objects.create(group=self.group, user=self.member, role="member")
+
+    def _event(self, starts_in_minutes):
+        now = timezone.now()
+        return Event.objects.create(
+            created_by=self.creator, group=self.group, title="E",
+            start_time=now + timedelta(minutes=starts_in_minutes),
+            end_time=now + timedelta(minutes=starts_in_minutes + 120),
+        )
+
+    def test_an_event_inside_the_lead_window_reminds_every_member(self):
+        event = self._event(starts_in_minutes=30)
+        self.assertEqual(send_due_reminders(), 1)
+
+        recipients = set(
+            Notification.objects.filter(notification_type="event_reminder")
+            .values_list("user_id", flat=True)
+        )
+        self.assertEqual(recipients, {self.creator.id, self.member.id})
+
+        event.refresh_from_db()
+        self.assertTrue(event.reminder_sent)
+
+    def test_an_event_beyond_the_lead_window_is_not_reminded(self):
+        self._event(starts_in_minutes=180)
+        self.assertEqual(send_due_reminders(), 0)
+        self.assertFalse(Notification.objects.exists())
+
+    def test_an_event_that_already_started_is_not_reminded(self):
+        self._event(starts_in_minutes=-10)
+        self.assertEqual(send_due_reminders(), 0)
+        self.assertFalse(Notification.objects.exists())
+
+    def test_reminders_are_sent_only_once(self):
+        self._event(starts_in_minutes=30)
+        self.assertEqual(send_due_reminders(), 1)
+        self.assertEqual(send_due_reminders(), 0)
+        self.assertEqual(
+            Notification.objects.filter(notification_type="event_reminder").count(), 2
+        )
+
+    def test_the_lead_window_is_configurable(self):
+        self._event(starts_in_minutes=180)
+        with override_settings(EVENT_REMINDER_LEAD_MINUTES=240):
+            self.assertEqual(send_due_reminders(), 1)
+
+    def test_reminding_a_missing_event_returns_none(self):
+        self.assertIsNone(send_reminder(999999))

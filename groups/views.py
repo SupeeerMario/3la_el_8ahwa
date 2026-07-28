@@ -20,6 +20,7 @@ from django.utils import timezone
 from core import errors
 from core.errors import error_response
 from core.permissions import IsGroupAdmin
+from notifications.services import notify, notify_group
 # Create your views here.
 
 
@@ -428,6 +429,18 @@ class GroupsViewSet(ModelViewSet):
                 group = group, invited_user = request.user
             ).delete()
 
+        notify_group(
+            group,
+            'new_member',
+            {
+                'group_id': group.id,
+                'group_name': group.name,
+                'user_id': request.user.id,
+                'username': request.user.username,
+            },
+            exclude=[request.user],
+        )
+
         joined = Group.objects.filter(pk = group.pk).annotate(
             members_count = Count('members')
         ).first()
@@ -553,6 +566,18 @@ class GroupInvitationViewSet(ReadOnlyModelViewSet):
             invitaion.invited_by = current_user
             invitaion.save()
 
+        notify(
+            invited_user,
+            'group_invite',
+            {
+                'invitation_id': invitaion.id,
+                'group_id': group.id,
+                'group_name': group.name,
+                'invited_by_id': current_user.id,
+                'invited_by_username': current_user.username,
+            },
+        )
+
         serializer = GroupInvitaionSerializer(invitaion)
 
         return Response(
@@ -612,6 +637,7 @@ class GroupInvitationViewSet(ReadOnlyModelViewSet):
                 )
 
             group = invitaion.group
+            invited_by = invitaion.invited_by
 
             GroupMember.objects.get_or_create(
                 user = current_user,
@@ -620,6 +646,17 @@ class GroupInvitationViewSet(ReadOnlyModelViewSet):
             )
 
             invitaion.delete()
+
+        notify(
+            invited_by,
+            'invite_accepted',
+            {
+                'group_id': group.id,
+                'group_name': group.name,
+                'user_id': current_user.id,
+                'username': current_user.username,
+            },
+        )
 
         return Response(
             {'message':f'Sucessfully joined {group.name}'},

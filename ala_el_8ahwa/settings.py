@@ -193,12 +193,19 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 WINNER_FREEZE_INTERVAL = float(os.getenv("WINNER_FREEZE_INTERVAL", "60"))
+EVENT_REMINDER_INTERVAL = float(os.getenv("EVENT_REMINDER_INTERVAL", "60"))
+EVENT_REMINDER_LEAD_MINUTES = int(os.getenv("EVENT_REMINDER_LEAD_MINUTES", "60"))
+EVENT_DELETE_LOCK_MINUTES = int(os.getenv("EVENT_DELETE_LOCK_MINUTES", "60"))
 
 CELERY_BEAT_SCHEDULE = {
     "freeze-due-event-winners": {
         "task": "events.freeze_due_winners",
         "schedule": WINNER_FREEZE_INTERVAL,
-    }
+    },
+    "send-due-event-reminders": {
+        "task": "events.send_due_reminders",
+        "schedule": EVENT_REMINDER_INTERVAL,
+    },
 }
 
 PASSWORD_RESET_TIMEOUT = int(os.getenv("PASSWORD_RESET_TIMEOUT", "3600"))

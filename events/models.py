@@ -15,6 +15,7 @@ class Event(models.Model):
     text = models.TextField(blank = True)
     winning_location = models.ForeignKey('EventLocation', null=True, blank=True, on_delete=models.SET_NULL, related_name='won_events')
     winner_frozen = models.BooleanField(default=False)
+    reminder_sent = models.BooleanField(default=False)
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add = True)

@@ -21,6 +21,7 @@ ALREADY_VOTED = "already_voted"
 VOTE_NOT_FOUND = "vote_not_found"
 
 EVENT_NOT_ACTIVE = "event_not_active"
+EVENT_STARTING_SOON = "event_starting_soon"
 NO_WINNING_LOCATION = "no_winning_location"
 ALREADY_CHECKED_IN = "already_checked_in"
 
