@@ -664,7 +664,7 @@ class EventReminderTests(APITestCase):
         self.assertEqual(send_due_reminders(), 1)
 
         recipients = set(
-            Notification.objects.filter(notification_type="event_reminder")
+            Notification.objects.filter(kind="event_reminder")
             .values_list("user_id", flat=True)
         )
         self.assertEqual(recipients, {self.creator.id, self.member.id})
@@ -687,7 +687,7 @@ class EventReminderTests(APITestCase):
         self.assertEqual(send_due_reminders(), 1)
         self.assertEqual(send_due_reminders(), 0)
         self.assertEqual(
-            Notification.objects.filter(notification_type="event_reminder").count(), 2
+            Notification.objects.filter(kind="event_reminder").count(), 2
         )
 
     def test_the_lead_window_is_configurable(self):

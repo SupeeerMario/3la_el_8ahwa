@@ -35,10 +35,10 @@ class NotificationTriggerTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
 
         notification = Notification.objects.get(user=self.newcomer)
-        self.assertEqual(notification.notification_type, "group_invite")
+        self.assertEqual(notification.kind, "group_invite")
         self.assertEqual(notification.payload["group_id"], self.group.id)
         self.assertEqual(notification.payload["invited_by_username"], "admin")
-        self.assertFalse(notification.is_read)
+        self.assertIsNone(notification.read_at)
 
     def test_accepting_an_invite_notifies_the_inviter(self):
         invitation = GroupInvitaion.objects.create(
@@ -50,7 +50,7 @@ class NotificationTriggerTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
         notification = Notification.objects.get(
-            user=self.admin, notification_type="invite_accepted"
+            user=self.admin, kind="invite_accepted"
         )
         self.assertEqual(notification.payload["username"], "newcomer")
 
@@ -64,7 +64,7 @@ class NotificationTriggerTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
 
         recipients = set(
-            Notification.objects.filter(notification_type="new_member")
+            Notification.objects.filter(kind="new_member")
             .values_list("user_id", flat=True)
         )
         self.assertEqual(recipients, {self.admin.id, self.member.id})
@@ -80,12 +80,12 @@ class NotificationTriggerTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
 
         recipients = set(
-            Notification.objects.filter(notification_type="new_event")
+            Notification.objects.filter(kind="new_event")
             .values_list("user_id", flat=True)
         )
         self.assertEqual(recipients, {self.member.id})
 
-        payload = Notification.objects.get(notification_type="new_event").payload
+        payload = Notification.objects.get(kind="new_event").payload
         self.assertEqual(payload["event_title"], "Meetup")
         self.assertEqual(payload["group_id"], self.group.id)
 
@@ -103,13 +103,13 @@ class NotificationReadTests(APITestCase):
         self.user = User.objects.create_user(username="u1", password="pw12345678")
         self.other = User.objects.create_user(username="u2", password="pw12345678")
         self.mine = Notification.objects.create(
-            user=self.user, notification_type="new_event", payload={"event_id": 1},
+            user=self.user, kind="new_event", payload={"event_id": 1},
         )
         self.also_mine = Notification.objects.create(
-            user=self.user, notification_type="new_member", payload={"group_id": 1},
+            user=self.user, kind="new_member", payload={"group_id": 1},
         )
         self.theirs = Notification.objects.create(
-            user=self.other, notification_type="new_event", payload={"event_id": 2},
+            user=self.other, kind="new_event", payload={"event_id": 2},
         )
 
     def test_listing_returns_only_my_notifications(self):
@@ -122,7 +122,7 @@ class NotificationReadTests(APITestCase):
         )
 
     def test_unread_filter(self):
-        Notification.objects.filter(pk=self.mine.pk).update(is_read=True)
+        Notification.objects.filter(pk=self.mine.pk).update(read_at=timezone.now())
         self.client.force_authenticate(self.user)
         resp = self.client.get("/notifications/?unread=true")
         self.assertEqual([row["id"] for row in resp.data], [self.also_mine.id])
@@ -136,28 +136,28 @@ class NotificationReadTests(APITestCase):
         self.client.force_authenticate(self.user)
         resp = self.client.post(f"/notifications/{self.mine.id}/read/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertTrue(resp.data["is_read"])
+        self.assertIsNotNone(resp.data["read_at"])
         self.mine.refresh_from_db()
-        self.assertTrue(self.mine.is_read)
+        self.assertIsNotNone(self.mine.read_at)
         self.also_mine.refresh_from_db()
-        self.assertFalse(self.also_mine.is_read)
+        self.assertIsNone(self.also_mine.read_at)
 
     def test_marking_all_read(self):
         self.client.force_authenticate(self.user)
         resp = self.client.post("/notifications/read_all/")
         self.assertEqual(resp.data["marked_read"], 2)
         self.assertEqual(
-            Notification.objects.filter(user=self.user, is_read=False).count(), 0
+            Notification.objects.filter(user=self.user, read_at__isnull=True).count(), 0
         )
         self.theirs.refresh_from_db()
-        self.assertFalse(self.theirs.is_read)
+        self.assertIsNone(self.theirs.read_at)
 
     def test_cannot_mark_another_users_notification_read(self):
         self.client.force_authenticate(self.user)
         resp = self.client.post(f"/notifications/{self.theirs.id}/read/")
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
         self.theirs.refresh_from_db()
-        self.assertFalse(self.theirs.is_read)
+        self.assertIsNone(self.theirs.read_at)
 
     def test_cannot_retrieve_another_users_notification(self):
         self.client.force_authenticate(self.user)
