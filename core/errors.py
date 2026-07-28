@@ -20,6 +20,10 @@ LOCATION_NOT_FOUND = "location_not_found"
 ALREADY_VOTED = "already_voted"
 VOTE_NOT_FOUND = "vote_not_found"
 
+EVENT_NOT_ACTIVE = "event_not_active"
+NO_WINNING_LOCATION = "no_winning_location"
+ALREADY_CHECKED_IN = "already_checked_in"
+
 USER_NOT_FOUND = "user_not_found"
 INVITE_PENDING = "invite_pending"
 INVITE_NOT_FOUND = "invite_not_found"
