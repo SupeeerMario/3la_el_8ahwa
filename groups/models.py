@@ -18,6 +18,8 @@ class Group(models.Model):
 
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_groups")
 
+    image_version = models.PositiveBigIntegerField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -102,3 +104,33 @@ class GroupInviteToken(models.Model):
 
     def __str__(self):
         return f"invite token for {self.group} created by {self.created_by}"
+
+class Message(models.Model):
+
+    KIND_CHOICES = (
+        ("user", "User"),
+        ("system", "System"),
+    )
+
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="messages")
+
+    sender = models.ForeignKey(
+        User, on_delete=models.CASCADE, null=True, blank=True, related_name="messages"
+    )
+
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES, default="user")
+
+    body = models.TextField()
+
+    payload = models.JSONField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["group", "-created_at"], name="msg_group_recent_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.kind} message in {self.group}"

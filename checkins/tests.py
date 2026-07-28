@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.db import IntegrityError, transaction
 from django.test import override_settings
+from unittest.mock import patch
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
@@ -10,7 +11,7 @@ from rest_framework import status
 from checkins.models import CheckIn
 from core.geo import haversine_meters
 from events.models import Event, EventLocation
-from groups.models import Group, GroupMember
+from groups.models import Group, GroupMember, Message
 
 User = get_user_model()
 
@@ -258,3 +259,129 @@ class CheckInReadTests(CheckInBaseTests):
         self.client.force_authenticate(self.member)
         resp = self.client.delete(f"/checkins/{self.mine.id}/")
         self.assertEqual(resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
+class CheckInPhotoTests(CheckInBaseTests):
+    """The photo rides alongside a check-in and can never affect its validity."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_authenticate(self.member)
+        self.checkin = CheckIn.objects.create(
+            event=self.event, user=self.member,
+            latitude=NEARBY_LAT, longitude=CAFE_LNG, is_valid=True,
+        )
+        self.theirs = CheckIn.objects.create(
+            event=self.event, user=self.other,
+            latitude=NEARBY_LAT, longitude=CAFE_LNG, is_valid=True,
+        )
+
+    def test_signature_pins_the_public_id_to_the_check_in(self):
+        resp = self.client.post(f"/checkins/{self.checkin.id}/image_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["params"]["public_id"], f"checkins/{self.checkin.id}")
+
+    def test_another_member_of_the_same_group_cannot_sign_for_it(self):
+        resp = self.client.post(f"/checkins/{self.theirs.id}/image_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(resp.data["code"], "not_checkin_owner")
+
+    def test_a_non_member_gets_404(self):
+        self.client.force_authenticate(self.outsider)
+        resp = self.client.post(f"/checkins/{self.checkin.id}/image_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_unauthenticated_is_refused(self):
+        self.client.force_authenticate(None)
+        resp = self.client.post(f"/checkins/{self.checkin.id}/image_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_signature_is_503_when_cloudinary_is_unconfigured(self):
+        with override_settings(CLOUDINARY_URL=""):
+            resp = self.client.post(f"/checkins/{self.checkin.id}/image_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    def test_confirming_a_version_publishes_an_image_url(self):
+        resp = self.client.post(f"/checkins/{self.checkin.id}/image/", {"version": 1712345678})
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(resp.data["image_url"])
+        self.assertIn(f"checkins/{self.checkin.id}", resp.data["image_url"])
+
+    def test_the_photo_never_changes_validity(self):
+        self.client.post(f"/checkins/{self.checkin.id}/image/", {"version": 1712345678})
+        self.checkin.refresh_from_db()
+        self.assertTrue(self.checkin.is_valid)
+
+        with patch("core.storage.destroy_image"):
+            self.client.delete(f"/checkins/{self.checkin.id}/image/")
+        self.checkin.refresh_from_db()
+        self.assertTrue(self.checkin.is_valid)
+
+    def test_deleting_the_photo_leaves_the_check_in_standing(self):
+        self.client.post(f"/checkins/{self.checkin.id}/image/", {"version": 1712345678})
+
+        with patch("core.storage.destroy_image") as destroyed:
+            resp = self.client.delete(f"/checkins/{self.checkin.id}/image/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIsNone(resp.data["image_url"])
+        destroyed.assert_called_once_with("checkins", self.checkin.id)
+        self.assertTrue(CheckIn.objects.filter(pk=self.checkin.pk).exists())
+
+    def test_another_member_cannot_delete_your_photo(self):
+        self.client.post(f"/checkins/{self.checkin.id}/image/", {"version": 1712345678})
+        self.client.force_authenticate(self.other)
+        resp = self.client.delete(f"/checkins/{self.checkin.id}/image/")
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.checkin.refresh_from_db()
+        self.assertEqual(self.checkin.image_version, 1712345678)
+
+    def test_a_missing_version_is_rejected(self):
+        resp = self.client.post(f"/checkins/{self.checkin.id}/image/", {})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "missing_field")
+
+    def test_the_photo_shows_on_the_group_roster(self):
+        self.client.post(f"/checkins/{self.checkin.id}/image/", {"version": 1712345678})
+        self.client.force_authenticate(self.other)
+        resp = self.client.get(f"/checkins/?event={self.event.id}")
+        mine = [row for row in resp.data if row["id"] == self.checkin.id][0]
+        self.assertIsNotNone(mine["image_url"])
+
+    def test_a_check_in_with_no_photo_serializes_null(self):
+        resp = self.client.get(f"/checkins/{self.checkin.id}/")
+        self.assertIsNone(resp.data["image_url"])
+
+
+class CheckInRoomMessageTests(CheckInBaseTests):
+    def _events(self):
+        return {
+            m.payload["event"]: m
+            for m in Message.objects.filter(group=self.group, kind="system")
+        }
+
+    def test_a_valid_check_in_writes_checkin_valid(self):
+        self.client.force_authenticate(self.member)
+        self.client.post("/checkins/", self._payload())
+        message = self._events()["checkin_valid"]
+        self.assertEqual(message.payload["actor_id"], self.member.id)
+        self.assertEqual(message.payload["target"], "Cafe")
+
+    def test_a_too_far_check_in_writes_checkin_rejected(self):
+        self.client.force_authenticate(self.member)
+        self.client.post("/checkins/", self._payload(lat=FAR_LAT))
+        message = self._events()["checkin_rejected"]
+        self.assertEqual(message.payload["target"], "Cafe")
+        self.assertIn("too far", message.body)
+
+    def test_upgrading_a_check_in_writes_a_second_row(self):
+        self.client.force_authenticate(self.member)
+        self.client.post("/checkins/", self._payload(lat=FAR_LAT))
+        self.client.post("/checkins/", self._payload())
+        kinds = [m.payload["event"] for m in Message.objects.filter(kind="system")]
+        self.assertIn("checkin_rejected", kinds)
+        self.assertIn("checkin_valid", kinds)
+
+    def test_a_refused_check_in_writes_nothing(self):
+        self.client.force_authenticate(self.outsider)
+        self.client.post("/checkins/", self._payload())
+        self.assertFalse(Message.objects.filter(kind="system").exists())

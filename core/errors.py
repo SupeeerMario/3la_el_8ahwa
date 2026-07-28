@@ -24,6 +24,10 @@ EVENT_NOT_ACTIVE = "event_not_active"
 EVENT_STARTING_SOON = "event_starting_soon"
 NO_WINNING_LOCATION = "no_winning_location"
 ALREADY_CHECKED_IN = "already_checked_in"
+NOT_CHECKIN_OWNER = "not_checkin_owner"
+
+MESSAGE_NOT_FOUND = "message_not_found"
+INVALID_CURSOR = "invalid_cursor"
 
 USER_NOT_FOUND = "user_not_found"
 INVITE_PENDING = "invite_pending"

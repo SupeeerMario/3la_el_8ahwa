@@ -37,7 +37,11 @@ def freeze_winner(event_id):
         event.winning_location = winner
         event.winner_frozen = True
         event.save(update_fields=["winning_location", "winner_frozen"])
-        return event
+
+    from groups.room import voting_closed
+
+    voting_closed(event)
+    return event
 
 
 def due_event_ids():

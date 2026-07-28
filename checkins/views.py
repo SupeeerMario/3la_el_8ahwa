@@ -1,14 +1,16 @@
 from django.conf import settings
 from rest_framework import mixins, status
+from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
 
-from core import errors
+from core import errors, storage
 from core.errors import error_response
 from core.geo import haversine_meters
 from events.models import Event
 from events.views import _as_int
+from groups import room
 from groups.models import GroupMember
 from .models import CheckIn
 from .serializers import CheckInDetailSerializer, CheckInSerializer
@@ -102,11 +104,13 @@ class CheckInViewSet(mixins.CreateModelMixin,
             event.winning_location.longitude,
         )
 
-        serializer.save(
+        checkin = serializer.save(
             event=event,
             user=current_user,
             is_valid=distance <= radius,
         )
+
+        room.checkin_recorded(checkin, current_user)
 
         return Response(
             {
@@ -117,3 +121,57 @@ class CheckInViewSet(mixins.CreateModelMixin,
             },
             status=status.HTTP_200_OK if existing else status.HTTP_201_CREATED
         )
+
+    def _own_checkin(self, request):
+        checkin = self.get_object()
+
+        if checkin.user_id != request.user.id:
+            return None, error_response(
+                errors.NOT_CHECKIN_OWNER,
+                'You can only change the photo on your own check-in',
+                status.HTTP_403_FORBIDDEN
+            )
+
+        if not storage.is_configured():
+            return None, error_response(
+                errors.AVATAR_STORAGE_UNCONFIGURED,
+                'Image uploads are not available on this deployment',
+                status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        return checkin, None
+
+    @action(detail=True, methods=['post'], url_path='image_upload_signature')
+    def image_upload_signature(self, request, pk=None):
+        checkin, refusal = self._own_checkin(request)
+        if refusal is not None:
+            return refusal
+
+        return Response(storage.upload_signature(storage.CHECKINS, checkin.id))
+
+    @action(detail=True, methods=['post', 'delete'], url_path='image')
+    def image(self, request, pk=None):
+        checkin, refusal = self._own_checkin(request)
+        if refusal is not None:
+            return refusal
+
+        if request.method == 'DELETE':
+            if checkin.image_version:
+                checkin.image_version = None
+                checkin.save(update_fields=['image_version'])
+                storage.destroy_image(storage.CHECKINS, checkin.id)
+            return Response(CheckInDetailSerializer(checkin).data)
+
+        version = _as_int(request.data.get('version'))
+
+        if version is None or version < 1:
+            return error_response(
+                errors.MISSING_FIELD,
+                'version is required and must be the version Cloudinary returned',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        checkin.image_version = version
+        checkin.save(update_fields=['image_version'])
+
+        return Response(CheckInDetailSerializer(checkin).data)

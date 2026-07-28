@@ -11,6 +11,7 @@ class CheckIn(models.Model):
     latitude = models.FloatField()
     longitude = models.FloatField()
     is_valid = models.BooleanField(default = False)
+    image_version = models.PositiveBigIntegerField(null=True, blank=True)
     checked_in_at = models.DateTimeField(auto_now_add = True)
 
 

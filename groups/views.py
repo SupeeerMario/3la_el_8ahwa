@@ -3,29 +3,36 @@ from datetime import timedelta
 from django.shortcuts import render
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
-from .models import Group, GroupMember,GroupInvitaion, GroupInviteToken
+from .models import Group, GroupMember,GroupInvitaion, GroupInviteToken, Message
 from .serializers import (
     GroupSerializer,
     GroupMemberSerializer,
     GroupInvitaionSerializer,
     GroupInviteTokenSerializer,
+    MessageSerializer,
 )
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework import status
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.contrib.auth import get_user_model
 from django.utils import timezone
-from core import errors
+from core import errors, storage
 from core.errors import error_response
 from core.permissions import IsGroupAdmin
+from core.throttling import GroupMessagesThrottle
+from . import cursors, room
 from notifications.services import notify, notify_group
 # Create your views here.
 
 
 DEFAULT_INVITE_TOKEN_HOURS = 168
 MAX_INVITE_TOKEN_HOURS = 720
+
+
+MESSAGE_PAGE_SIZE = 30
+MESSAGE_PAGE_LIMIT = 100
 
 
 def _as_int(value):
@@ -51,13 +58,17 @@ class GroupsViewSet(ModelViewSet):
             "change_role",
             "invite_tokens",
             "revoke_invite_token",
+            "image_upload_signature",
+            "image",
         ):
             return [IsAuthenticated(), IsGroupAdmin()]
         return super().get_permissions()
 
     def get_queryset(self):
         return Group.objects.filter(
-            members__user = self.request.user
+            id__in = GroupMember.objects.filter(
+                user = self.request.user
+            ).values('group_id')
         ).annotate(members_count = Count('members'))
 
 
@@ -117,6 +128,8 @@ class GroupsViewSet(ModelViewSet):
                     {'message': f'You have left and {group_name} was deleted (no members remained)'},
                     status=status.HTTP_200_OK
                 )
+
+            room.member_left(group, current_user)
 
             if was_admin and not remaining.filter(role="admin").exists():
                 new_admin = remaining.order_by("-joined_at", "-id").first()
@@ -363,6 +376,119 @@ class GroupsViewSet(ModelViewSet):
 
 
     @action(
+        detail=True,
+        methods=['POST'],
+        permission_classes = [IsAuthenticated],
+        url_path='image_upload_signature'
+    )
+    def image_upload_signature(self, request, pk=None):
+        group = self.get_object()
+
+        if not storage.is_configured():
+            return error_response(
+                errors.AVATAR_STORAGE_UNCONFIGURED,
+                'Image uploads are not available on this deployment',
+                status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        return Response(storage.upload_signature(storage.GROUPS, group.id))
+
+
+    @action(
+        detail=True,
+        methods=['POST', 'DELETE'],
+        permission_classes = [IsAuthenticated]
+    )
+    def image(self, request, pk=None):
+        group = self.get_object()
+
+        if not storage.is_configured():
+            return error_response(
+                errors.AVATAR_STORAGE_UNCONFIGURED,
+                'Image uploads are not available on this deployment',
+                status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        if request.method == 'DELETE':
+            if group.image_version:
+                group.image_version = None
+                group.save(update_fields=['image_version'])
+                storage.destroy_image(storage.GROUPS, group.id)
+            return Response(GroupSerializer(group).data)
+
+        version = _as_int(request.data.get('version'))
+
+        if version is None or version < 1:
+            return error_response(
+                errors.MISSING_FIELD,
+                'version is required and must be the version Cloudinary returned',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        group.image_version = version
+        group.save(update_fields=['image_version'])
+
+        return Response(GroupSerializer(group).data)
+
+
+    @action(
+        detail=True,
+        methods=['GET', 'POST'],
+        permission_classes = [IsAuthenticated],
+        throttle_classes = [GroupMessagesThrottle]
+    )
+    def messages(self, request, pk=None):
+        group = self.get_object()
+
+        if request.method == 'POST':
+            body = (request.data.get('body') or '').strip()
+
+            if not body:
+                return error_response(
+                    errors.MISSING_FIELD,
+                    'body is required',
+                    status.HTTP_400_BAD_REQUEST
+                )
+
+            message = Message.objects.create(
+                group=group, sender=request.user, kind='user', body=body
+            )
+
+            return Response(
+                MessageSerializer(message).data,
+                status=status.HTTP_201_CREATED
+            )
+
+        qs = Message.objects.filter(group=group).select_related('sender')
+
+        before = request.query_params.get('before')
+        if before:
+            position = cursors.decode(before)
+            if position is None:
+                return error_response(
+                    errors.INVALID_CURSOR,
+                    'before is not a cursor this endpoint issued',
+                    status.HTTP_400_BAD_REQUEST
+                )
+            stamp, message_id = position
+            qs = qs.filter(
+                Q(created_at__lt=stamp)
+                | Q(created_at=stamp, id__lt=message_id)
+            )
+
+        limit = _as_int(request.query_params.get('limit')) or MESSAGE_PAGE_SIZE
+        limit = max(1, min(limit, MESSAGE_PAGE_LIMIT))
+
+        window = list(qs[:limit + 1])
+        page = window[:limit]
+
+        return Response({
+            'messages': MessageSerializer(page, many=True).data,
+            'next_before': cursors.encode(page[-1]) if len(window) > limit else None,
+        })
+
+
+    @action(
         detail=False,
         methods=['POST'],
         permission_classes = [IsAuthenticated]
@@ -428,6 +554,8 @@ class GroupsViewSet(ModelViewSet):
             GroupInvitaion.objects.filter(
                 group = group, invited_user = request.user
             ).delete()
+
+        room.member_joined(group, request.user)
 
         notify_group(
             group,
@@ -646,6 +774,8 @@ class GroupInvitationViewSet(ReadOnlyModelViewSet):
             )
 
             invitaion.delete()
+
+        room.member_joined(group, current_user)
 
         notify(
             invited_by,
