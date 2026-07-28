@@ -1,10 +1,13 @@
 from rest_framework import serializers
-from .models import Group, GroupMember,GroupInvitaion, GroupInviteToken
+from .models import Group, GroupMember,GroupInvitaion, GroupInviteToken, Message
 from users.serializers import PublicUserSerializer
+from core import storage
 
 class GroupSerializer(serializers.ModelSerializer):
     members_count = serializers.IntegerField(read_only=True)
     created_by = PublicUserSerializer(read_only=True)
+    image_url = serializers.SerializerMethodField()
+
     class Meta:
         model = Group
         fields = [
@@ -13,9 +16,13 @@ class GroupSerializer(serializers.ModelSerializer):
             'desc',
             'created_by',
             'created_at',
-            'members_count'
+            'members_count',
+            'image_url'
         ]
         read_only_fields = ['created_by']
+
+    def get_image_url(self, obj):
+        return storage.group_image_url(obj)
 
 class GroupMemberSerializer(serializers.ModelSerializer):
     user = PublicUserSerializer(read_only = True)
@@ -33,6 +40,7 @@ class GroupMemberSerializer(serializers.ModelSerializer):
 
 class InvitationGroupSerializer(serializers.ModelSerializer):
     members_count = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Group
@@ -40,11 +48,15 @@ class InvitationGroupSerializer(serializers.ModelSerializer):
             'id',
             'name',
             'desc',
-            'members_count'
+            'members_count',
+            'image_url'
         ]
 
     def get_members_count(self, obj):
         return obj.members.count()
+
+    def get_image_url(self, obj):
+        return storage.group_image_url(obj)
 
 
 class GroupInvitaionSerializer(serializers.ModelSerializer):
@@ -89,3 +101,19 @@ class GroupInviteTokenSerializer(serializers.ModelSerializer):
             'revoked'
         ]
         read_only_fields = fields
+
+
+class MessageSerializer(serializers.ModelSerializer):
+    sender = PublicUserSerializer(read_only=True)
+
+    class Meta:
+        model = Message
+        fields = [
+            'id',
+            'kind',
+            'sender',
+            'body',
+            'payload',
+            'created_at'
+        ]
+        read_only_fields = ['id', 'kind', 'sender', 'payload', 'created_at']

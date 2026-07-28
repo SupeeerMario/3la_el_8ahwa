@@ -1,11 +1,13 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 from rest_framework.test import APITestCase
 from rest_framework import status
 from django.contrib.auth import get_user_model
+from django.test import override_settings
 from django.utils import timezone
 
-from groups.models import Group, GroupMember, GroupInvitaion, GroupInviteToken
+from groups.models import Group, GroupMember, GroupInvitaion, GroupInviteToken, Message
 
 User = get_user_model()
 
@@ -736,3 +738,314 @@ class InviteTokenTests(APITestCase):
     def test_an_absurd_expiry_is_rejected(self):
         resp = self._create_token(expires_in_hours=100000)
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class GroupImageTests(APITestCase):
+    """Mirrors the avatar flow: signing and URL building run for real, only the
+    destroy call — which touches the network — is patched."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(username="gadmin", password="pw12345678")
+        self.member = User.objects.create_user(username="gmember", password="pw12345678")
+        self.outsider = User.objects.create_user(username="gout", password="pw12345678")
+        self.group = Group.objects.create(name="Crew", created_by=self.admin)
+        GroupMember.objects.create(group=self.group, user=self.admin, role="admin")
+        GroupMember.objects.create(group=self.group, user=self.member, role="member")
+
+    def test_signature_pins_the_public_id_to_the_group(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.post(f"/groups/{self.group.id}/image_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["params"]["public_id"], f"groups/{self.group.id}")
+
+    def test_a_plain_member_cannot_get_a_signature(self):
+        self.client.force_authenticate(self.member)
+        resp = self.client.post(f"/groups/{self.group.id}/image_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_non_member_gets_404(self):
+        self.client.force_authenticate(self.outsider)
+        resp = self.client.post(f"/groups/{self.group.id}/image_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_unauthenticated_is_refused(self):
+        resp = self.client.post(f"/groups/{self.group.id}/image_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_signature_is_503_when_cloudinary_is_unconfigured(self):
+        self.client.force_authenticate(self.admin)
+        with override_settings(CLOUDINARY_URL=""):
+            resp = self.client.post(f"/groups/{self.group.id}/image_upload_signature/")
+        self.assertEqual(resp.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(resp.data["code"], "avatar_storage_unconfigured")
+
+    def test_confirming_a_version_publishes_an_image_url(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.post(f"/groups/{self.group.id}/image/", {"version": 1712345678})
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(resp.data["image_url"])
+        self.assertIn(f"groups/{self.group.id}", resp.data["image_url"])
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.image_version, 1712345678)
+
+    def test_a_plain_member_cannot_set_the_image(self):
+        self.client.force_authenticate(self.member)
+        resp = self.client.post(f"/groups/{self.group.id}/image/", {"version": 1712345678})
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.group.refresh_from_db()
+        self.assertIsNone(self.group.image_version)
+
+    def test_a_missing_version_is_rejected(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.post(f"/groups/{self.group.id}/image/", {})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "missing_field")
+
+    def test_deleting_the_image_clears_it(self):
+        self.client.force_authenticate(self.admin)
+        self.client.post(f"/groups/{self.group.id}/image/", {"version": 1712345678})
+
+        with patch("core.storage.destroy_image") as destroyed:
+            resp = self.client.delete(f"/groups/{self.group.id}/image/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIsNone(resp.data["image_url"])
+        destroyed.assert_called_once_with("groups", self.group.id)
+        self.group.refresh_from_db()
+        self.assertIsNone(self.group.image_version)
+
+    def test_a_group_with_no_image_serializes_null(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.get(f"/groups/{self.group.id}/")
+        self.assertIsNone(resp.data["image_url"])
+
+    def test_the_image_reaches_the_nested_group_on_an_invitation(self):
+        self.client.force_authenticate(self.admin)
+        self.client.post(f"/groups/{self.group.id}/image/", {"version": 1712345678})
+        GroupInvitaion.objects.create(
+            group=self.group, invited_user=self.outsider,
+            invited_by=self.admin, status="pending",
+        )
+        self.client.force_authenticate(self.outsider)
+        resp = self.client.get("/groups/invitations/")
+        self.assertIsNotNone(resp.data[0]["group"]["image_url"])
+
+
+class GroupMembersCountTests(APITestCase):
+    """members_count used to be 1 for every group: filtering on members__user
+    and counting the same join counts only the requester's own membership."""
+
+    def setUp(self):
+        self.me = User.objects.create_user(username="counter", password="pw12345678")
+        self.group = Group.objects.create(name="Crew", created_by=self.me)
+        GroupMember.objects.create(group=self.group, user=self.me, role="admin")
+        for index in range(3):
+            GroupMember.objects.create(
+                group=self.group,
+                user=User.objects.create_user(
+                    username=f"mate{index}", password="pw12345678"
+                ),
+                role="member",
+            )
+
+    def test_members_count_is_the_whole_group_not_just_me(self):
+        self.client.force_authenticate(self.me)
+        resp = self.client.get("/groups/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data[0]["members_count"], 4)
+
+    def test_members_count_on_a_solo_group_is_one(self):
+        solo = Group.objects.create(name="Solo", created_by=self.me)
+        GroupMember.objects.create(group=solo, user=self.me, role="admin")
+        self.client.force_authenticate(self.me)
+        resp = self.client.get("/groups/")
+        counts = {row["name"]: row["members_count"] for row in resp.data}
+        self.assertEqual(counts, {"Crew": 4, "Solo": 1})
+
+    def test_a_group_you_are_not_in_is_still_invisible(self):
+        outsider = User.objects.create_user(username="nosy", password="pw12345678")
+        self.client.force_authenticate(outsider)
+        resp = self.client.get("/groups/")
+        self.assertEqual(list(resp.data), [])
+
+
+class RoomMessageTests(APITestCase):
+    def setUp(self):
+        self.me = User.objects.create_user(username="talker", password="pw12345678")
+        self.mate = User.objects.create_user(username="mate", password="pw12345678")
+        self.outsider = User.objects.create_user(username="lurker", password="pw12345678")
+        self.group = Group.objects.create(name="Room", created_by=self.me)
+        GroupMember.objects.create(group=self.group, user=self.me, role="admin")
+        GroupMember.objects.create(group=self.group, user=self.mate, role="member")
+
+    def test_a_member_can_post(self):
+        self.client.force_authenticate(self.me)
+        resp = self.client.post(f"/groups/{self.group.id}/messages/", {"body": "yalla 7"})
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data["kind"], "user")
+        self.assertEqual(resp.data["body"], "yalla 7")
+        self.assertEqual(resp.data["sender"]["username"], "talker")
+
+    def test_a_blank_body_is_rejected(self):
+        self.client.force_authenticate(self.me)
+        for body in ("", "   ", "\n"):
+            resp = self.client.post(f"/groups/{self.group.id}/messages/", {"body": body})
+            self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+            self.assertEqual(resp.data["code"], "missing_field")
+        self.assertFalse(Message.objects.exists())
+
+    def test_a_client_cannot_forge_a_system_message(self):
+        self.client.force_authenticate(self.me)
+        resp = self.client.post(
+            f"/groups/{self.group.id}/messages/", {"body": "fake", "kind": "system"}
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data["kind"], "user")
+        self.assertIsNotNone(Message.objects.get().sender_id)
+
+    def test_a_non_member_cannot_post_or_read(self):
+        self.client.force_authenticate(self.outsider)
+        posted = self.client.post(f"/groups/{self.group.id}/messages/", {"body": "hi"})
+        self.assertEqual(posted.status_code, status.HTTP_404_NOT_FOUND)
+        read = self.client.get(f"/groups/{self.group.id}/messages/")
+        self.assertEqual(read.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_unauthenticated_is_refused(self):
+        resp = self.client.get(f"/groups/{self.group.id}/messages/")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_messages_come_back_newest_first(self):
+        for body in ("one", "two", "three"):
+            Message.objects.create(group=self.group, sender=self.me, body=body)
+        self.client.force_authenticate(self.me)
+        resp = self.client.get(f"/groups/{self.group.id}/messages/")
+        self.assertEqual(
+            [row["body"] for row in resp.data["messages"]], ["three", "two", "one"]
+        )
+        self.assertIsNone(resp.data["next_before"])
+
+    def test_another_groups_messages_never_leak(self):
+        other = Group.objects.create(name="Other", created_by=self.outsider)
+        GroupMember.objects.create(group=other, user=self.outsider, role="admin")
+        Message.objects.create(group=other, sender=self.outsider, body="secret")
+        Message.objects.create(group=self.group, sender=self.me, body="ours")
+
+        self.client.force_authenticate(self.me)
+        resp = self.client.get(f"/groups/{self.group.id}/messages/")
+        self.assertEqual([row["body"] for row in resp.data["messages"]], ["ours"])
+
+    def test_paging_backwards_walks_the_whole_stream_without_repeats(self):
+        for index in range(12):
+            Message.objects.create(group=self.group, sender=self.me, body=f"m{index}")
+
+        self.client.force_authenticate(self.me)
+        seen = []
+        cursor = None
+        for _ in range(5):
+            url = f"/groups/{self.group.id}/messages/?limit=5"
+            if cursor:
+                url += f"&before={cursor}"
+            resp = self.client.get(url)
+            seen.extend(row["id"] for row in resp.data["messages"])
+            cursor = resp.data["next_before"]
+            if cursor is None:
+                break
+
+        self.assertIsNone(cursor)
+        self.assertEqual(len(seen), 12)
+        self.assertEqual(len(set(seen)), 12)
+        self.assertEqual(seen, sorted(seen, reverse=True))
+
+    def test_next_before_is_null_on_the_last_page(self):
+        for index in range(3):
+            Message.objects.create(group=self.group, sender=self.me, body=f"m{index}")
+        self.client.force_authenticate(self.me)
+        resp = self.client.get(f"/groups/{self.group.id}/messages/?limit=5")
+        self.assertEqual(len(resp.data["messages"]), 3)
+        self.assertIsNone(resp.data["next_before"])
+
+    def test_a_cursor_this_endpoint_did_not_issue_is_rejected(self):
+        self.client.force_authenticate(self.me)
+        resp = self.client.get(f"/groups/{self.group.id}/messages/?before=not-a-cursor")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "invalid_cursor")
+
+    def test_the_page_limit_is_capped(self):
+        for index in range(5):
+            Message.objects.create(group=self.group, sender=self.me, body=f"m{index}")
+        self.client.force_authenticate(self.me)
+        resp = self.client.get(f"/groups/{self.group.id}/messages/?limit=99999")
+        self.assertEqual(len(resp.data["messages"]), 5)
+
+    def test_messages_sharing_a_timestamp_still_page_cleanly(self):
+        stamp = timezone.now()
+        made = [
+            Message.objects.create(group=self.group, sender=self.me, body=f"m{index}")
+            for index in range(4)
+        ]
+        Message.objects.filter(pk__in=[m.pk for m in made]).update(created_at=stamp)
+
+        self.client.force_authenticate(self.me)
+        first = self.client.get(f"/groups/{self.group.id}/messages/?limit=2")
+        cursor = first.data["next_before"]
+        self.assertIsNotNone(cursor)
+        second = self.client.get(f"/groups/{self.group.id}/messages/?limit=2&before={cursor}")
+
+        ids = [row["id"] for row in first.data["messages"]] + [
+            row["id"] for row in second.data["messages"]
+        ]
+        self.assertEqual(len(set(ids)), 4)
+
+
+class RoomSystemMessageTests(APITestCase):
+    """Every system row is written where the action happens, with a structured
+    payload the bilingual client renders from instead of parsing body."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(username="sysadmin", password="pw12345678")
+        self.member = User.objects.create_user(username="sysmember", password="pw12345678")
+        self.group = Group.objects.create(name="G", created_by=self.admin)
+        GroupMember.objects.create(group=self.group, user=self.admin, role="admin")
+
+    def _events(self):
+        return {
+            m.payload["event"]: m
+            for m in Message.objects.filter(group=self.group, kind="system")
+        }
+
+    def test_joining_by_token_writes_member_joined(self):
+        token = GroupInviteToken.objects.create(
+            group=self.group, created_by=self.admin,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        self.client.force_authenticate(self.member)
+        self.client.post("/groups/join/", {"token": str(token.token)})
+
+        message = self._events()["member_joined"]
+        self.assertEqual(message.kind, "system")
+        self.assertIsNone(message.sender_id)
+        self.assertEqual(message.payload["actor_id"], self.member.id)
+        self.assertIn("sysmember", message.body)
+
+    def test_accepting_an_invite_writes_member_joined(self):
+        invitation = GroupInvitaion.objects.create(
+            group=self.group, invited_user=self.member,
+            invited_by=self.admin, status="pending",
+        )
+        self.client.force_authenticate(self.member)
+        self.client.post(f"/groups/invitations/{invitation.id}/invite_responce/",
+                         {"action": "accept"})
+        self.assertIn("member_joined", self._events())
+
+    def test_leaving_writes_member_left(self):
+        GroupMember.objects.create(group=self.group, user=self.member, role="member")
+        self.client.force_authenticate(self.member)
+        self.client.delete(f"/groups/{self.group.id}/leave_group/")
+
+        message = self._events()["member_left"]
+        self.assertEqual(message.payload["actor_id"], self.member.id)
+
+    def test_a_refused_action_writes_nothing(self):
+        outsider = User.objects.create_user(username="nope", password="pw12345678")
+        self.client.force_authenticate(outsider)
+        self.client.post(f"/groups/{self.group.id}/messages/", {"body": "hi"})
+        self.assertFalse(Message.objects.filter(kind="system").exists())

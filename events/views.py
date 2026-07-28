@@ -15,6 +15,7 @@ from groups.models import GroupMember
 from core import errors
 from core.errors import error_response
 from core.permissions import IsEventCreator, IsLocationProposer
+from groups import room
 from notifications.services import notify_group
 
 # Create your views here.
@@ -75,6 +76,8 @@ class EventViewSet(ModelViewSet):
         serializer = self.get_serializer(data = request.data)
         serializer.is_valid(raise_exception = True)
         event = serializer.save(created_by = current_user, group_id = group_id)
+
+        room.event_created(event, current_user)
 
         notify_group(
             event.group,
@@ -209,7 +212,9 @@ class EventLocationViewSet(ModelViewSet):
 
         serializer = self.get_serializer(data = request.data)
         serializer.is_valid(raise_exception = True)
-        serializer.save(proposed_by = current_user, event = event)
+        location = serializer.save(proposed_by = current_user, event = event)
+
+        room.location_proposed(location, current_user)
 
         return Response(
             {'message':'Location proposed successfully', 'location':serializer.data},
@@ -257,6 +262,8 @@ class EventLocationViewSet(ModelViewSet):
             existing.location = location
             existing.save(update_fields=['location', 'event'])
 
+            room.vote_cast(location, request.user)
+
             return Response(
                 LocationVoteSerializer(existing).data,
                 status=status.HTTP_200_OK
@@ -272,6 +279,8 @@ class EventLocationViewSet(ModelViewSet):
                 'You have already voted in this event',
                 status.HTTP_400_BAD_REQUEST
             )
+
+        room.vote_cast(location, request.user)
 
         return Response(
             LocationVoteSerializer(new_vote).data,

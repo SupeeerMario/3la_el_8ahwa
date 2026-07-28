@@ -594,11 +594,11 @@ class AvatarTests(APITestCase):
         self.client.force_authenticate(self.user)
         self.client.post("/users/avatar/", {"version": 111})
 
-        with patch("core.storage.destroy_avatar") as destroyed:
+        with patch("core.storage.destroy_image") as destroyed:
             resp = self.client.delete("/users/avatar/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertIsNone(resp.data["avatar_url"])
-        destroyed.assert_called_once_with(self.user.id)
+        destroyed.assert_called_once_with("avatars", self.user.id)
         self.user.refresh_from_db()
         self.assertIsNone(self.user.avatar_version)
 
@@ -606,7 +606,7 @@ class AvatarTests(APITestCase):
         from unittest.mock import patch
 
         self.client.force_authenticate(self.user)
-        with patch("core.storage.destroy_avatar") as destroyed:
+        with patch("core.storage.destroy_image") as destroyed:
             resp = self.client.delete("/users/avatar/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         destroyed.assert_not_called()

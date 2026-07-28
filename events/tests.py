@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 from rest_framework import status
 
-from groups.models import Group, GroupMember
+from groups.models import Group, GroupMember, Message
 from events.models import Event, EventLocation, LocationVote
 from events.reminders import send_due_reminders, send_reminder
 from events.voting import freeze_due_winners, freeze_winner
@@ -697,3 +697,91 @@ class EventReminderTests(APITestCase):
 
     def test_reminding_a_missing_event_returns_none(self):
         self.assertIsNone(send_reminder(999999))
+
+
+class EventRoomMessageTests(APITestCase):
+    """Voting and event actions write structured system rows into the group room."""
+
+    def setUp(self):
+        self.me = User.objects.create_user(username="roomer", password="pw12345678")
+        self.mate = User.objects.create_user(username="roommate", password="pw12345678")
+        self.group = Group.objects.create(name="G", created_by=self.me)
+        GroupMember.objects.create(group=self.group, user=self.me, role="admin")
+        GroupMember.objects.create(group=self.group, user=self.mate, role="member")
+
+    def _events(self):
+        return {
+            m.payload["event"]: m
+            for m in Message.objects.filter(group=self.group, kind="system")
+        }
+
+    def _event_with_locations(self):
+        event = Event.objects.create(
+            created_by=self.me, group=self.group, title="E",
+            start_time=_future(), end_time=_future(hours=2),
+        )
+        cafe = EventLocation.objects.create(
+            event=event, proposed_by=self.me, name="Cafe", latitude=1.0, longitude=2.0,
+        )
+        return event, cafe
+
+    def test_creating_an_event_writes_event_created(self):
+        self.client.force_authenticate(self.me)
+        self.client.post("/events/", {
+            "group_id": self.group.id, "title": "Meetup",
+            "start_time": _future().isoformat(),
+            "end_time": _future(hours=2).isoformat(),
+        })
+        message = self._events()["event_created"]
+        self.assertEqual(message.payload["target"], "Meetup")
+        self.assertEqual(message.payload["actor_id"], self.me.id)
+
+    def test_proposing_a_location_writes_location_proposed(self):
+        event, _ = self._event_with_locations()
+        self.client.force_authenticate(self.mate)
+        self.client.post("/event-locations/", {
+            "event_id": event.id, "name": "Diner", "latitude": 3.0, "longitude": 4.0,
+        })
+        message = self._events()["location_proposed"]
+        self.assertEqual(message.payload["target"], "Diner")
+        self.assertEqual(message.payload["actor_id"], self.mate.id)
+
+    def test_voting_writes_vote_cast_and_moving_writes_another(self):
+        event, cafe = self._event_with_locations()
+        diner = EventLocation.objects.create(
+            event=event, proposed_by=self.mate, name="Diner", latitude=3.0, longitude=4.0,
+        )
+        self.client.force_authenticate(self.me)
+        self.client.post(f"/event-locations/{cafe.id}/vote/")
+        self.client.post(f"/event-locations/{diner.id}/vote/")
+
+        cast = Message.objects.filter(kind="system", payload__event="vote_cast")
+        self.assertEqual(cast.count(), 2)
+        self.assertEqual(
+            sorted(m.payload["target"] for m in cast), ["Cafe", "Diner"]
+        )
+
+    def test_freezing_a_winner_writes_voting_closed(self):
+        event, cafe = self._event_with_locations()
+        LocationVote.objects.create(location=cafe, voted_by=self.me)
+        freeze_winner(event.id)
+
+        message = self._events()["voting_closed"]
+        self.assertEqual(message.payload["target"], "Cafe")
+        self.assertIn("Cafe", message.body)
+
+    def test_freezing_with_no_votes_still_writes_voting_closed(self):
+        event, _ = self._event_with_locations()
+        freeze_winner(event.id)
+
+        message = self._events()["voting_closed"]
+        self.assertIsNone(message.payload["target"])
+
+    def test_a_refused_vote_writes_nothing(self):
+        outsider = User.objects.create_user(username="outsideroom", password="pw12345678")
+        _, cafe = self._event_with_locations()
+        self.client.force_authenticate(outsider)
+        self.client.post(f"/event-locations/{cafe.id}/vote/")
+        self.assertFalse(
+            Message.objects.filter(payload__event="vote_cast").exists()
+        )

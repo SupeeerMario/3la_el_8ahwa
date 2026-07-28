@@ -263,7 +263,7 @@ class UserViewSet(viewsets.ViewSet):
                 status.HTTP_503_SERVICE_UNAVAILABLE
             )
 
-        return Response(storage.upload_signature(request.user.id))
+        return Response(storage.upload_signature(storage.AVATARS, request.user.id))
 
 
     @action(
@@ -285,7 +285,7 @@ class UserViewSet(viewsets.ViewSet):
             if current_user.avatar_version:
                 current_user.avatar_version = None
                 current_user.save(update_fields=["avatar_version"])
-                storage.destroy_avatar(current_user.id)
+                storage.destroy_image(storage.AVATARS, current_user.id)
             return Response(UserSeriailizer(current_user).data)
 
         version = _as_int(request.data.get("version"))

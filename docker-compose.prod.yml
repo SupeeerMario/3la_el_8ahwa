@@ -18,7 +18,3 @@ services:
   nginx:
     ports:
       - "8002:80"
-
-volumes:
-  postgres_data:
-    name: ala_el_8ahwa_prod_postgres_data_prod
