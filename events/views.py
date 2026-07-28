@@ -1,4 +1,8 @@
+from datetime import timedelta
+
+from django.conf import settings
 from django.db import IntegrityError
+from django.utils import timezone
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
@@ -11,6 +15,7 @@ from groups.models import GroupMember
 from core import errors
 from core.errors import error_response
 from core.permissions import IsEventCreator, IsLocationProposer
+from notifications.services import notify_group
 
 # Create your views here.
 
@@ -69,13 +74,40 @@ class EventViewSet(ModelViewSet):
         
         serializer = self.get_serializer(data = request.data)
         serializer.is_valid(raise_exception = True)
-        serializer.save(created_by = current_user, group_id = group_id)
+        event = serializer.save(created_by = current_user, group_id = group_id)
 
+        notify_group(
+            event.group,
+            'new_event',
+            {
+                'event_id': event.id,
+                'event_title': event.title,
+                'group_id': event.group_id,
+                'group_name': event.group.name,
+                'start_time': event.start_time.isoformat(),
+                'created_by_id': current_user.id,
+                'created_by_username': current_user.username,
+            },
+            exclude=[current_user],
+        )
 
         return Response(
             {'message':'Event created successfully', 'event':serializer.data},
             status=status.HTTP_201_CREATED
         )
+
+    def destroy(self, request, *args, **kwargs):
+        event = self.get_object()
+        lock = timedelta(minutes=settings.EVENT_DELETE_LOCK_MINUTES)
+
+        if timezone.now() >= event.start_time - lock:
+            return error_response(
+                errors.EVENT_STARTING_SOON,
+                'This event starts too soon to be deleted',
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        return super().destroy(request, *args, **kwargs)
 
     @action(detail=True, methods=['get'], url_path='tally')
     def tally(self, request, pk=None):
