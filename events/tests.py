@@ -1,5 +1,7 @@
 from datetime import timedelta
+from unittest import mock
 
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
@@ -7,6 +9,7 @@ from rest_framework import status
 
 from groups.models import Group, GroupMember
 from events.models import Event, EventLocation, LocationVote
+from events.voting import freeze_due_winners, freeze_winner
 
 User = get_user_model()
 
@@ -318,3 +321,265 @@ class EventUpdateTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.event.refresh_from_db()
         self.assertEqual(self.event.end_time, original_end_time)
+
+
+class VotingBaseTests(APITestCase):
+    def setUp(self):
+        self.member = User.objects.create_user(username="voter", password="pw12345678")
+        self.other = User.objects.create_user(username="voter2", password="pw12345678")
+        self.outsider = User.objects.create_user(username="outsider", password="pw12345678")
+        self.group = Group.objects.create(name="G", created_by=self.member)
+        GroupMember.objects.create(group=self.group, user=self.member, role="admin")
+        GroupMember.objects.create(group=self.group, user=self.other, role="member")
+        self.event = Event.objects.create(
+            created_by=self.member, group=self.group, title="E",
+            start_time=_future(), end_time=_future(hours=2),
+        )
+        self.cafe = EventLocation.objects.create(
+            event=self.event, proposed_by=self.member,
+            name="Cafe", latitude=1.0, longitude=2.0,
+        )
+        self.diner = EventLocation.objects.create(
+            event=self.event, proposed_by=self.other,
+            name="Diner", latitude=3.0, longitude=4.0,
+        )
+
+    def _start_event_now(self):
+        Event.objects.filter(pk=self.event.pk).update(
+            start_time=timezone.now() - timedelta(minutes=1)
+        )
+        self.event.refresh_from_db()
+
+
+class CastVoteTests(VotingBaseTests):
+    def test_member_can_vote(self):
+        self.client.force_authenticate(self.member)
+        resp = self.client.post(f"/event-locations/{self.cafe.id}/vote/")
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        vote = LocationVote.objects.get(voted_by=self.member)
+        self.assertEqual(vote.location_id, self.cafe.id)
+        self.assertEqual(vote.event_id, self.event.id)
+
+    def test_voting_twice_for_the_same_location_is_rejected(self):
+        self.client.force_authenticate(self.member)
+        self.client.post(f"/event-locations/{self.cafe.id}/vote/")
+        resp = self.client.post(f"/event-locations/{self.cafe.id}/vote/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "already_voted")
+        self.assertEqual(LocationVote.objects.filter(voted_by=self.member).count(), 1)
+
+    def test_voting_for_a_second_location_moves_the_vote(self):
+        self.client.force_authenticate(self.member)
+        self.client.post(f"/event-locations/{self.cafe.id}/vote/")
+        resp = self.client.post(f"/event-locations/{self.diner.id}/vote/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        votes = LocationVote.objects.filter(voted_by=self.member)
+        self.assertEqual(votes.count(), 1)
+        self.assertEqual(votes.first().location_id, self.diner.id)
+
+    def test_one_vote_per_event_is_enforced_by_the_database(self):
+        LocationVote.objects.create(location=self.cafe, voted_by=self.member)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                LocationVote.objects.create(location=self.diner, voted_by=self.member)
+
+    def test_unauthenticated_cannot_vote(self):
+        resp = self.client.post(f"/event-locations/{self.cafe.id}/vote/")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_non_member_cannot_vote(self):
+        self.client.force_authenticate(self.outsider)
+        resp = self.client.post(f"/event-locations/{self.cafe.id}/vote/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(LocationVote.objects.exists())
+
+    def test_voting_after_start_time_is_rejected(self):
+        self._start_event_now()
+        self.client.force_authenticate(self.member)
+        resp = self.client.post(f"/event-locations/{self.cafe.id}/vote/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "voting_closed")
+        self.assertFalse(LocationVote.objects.exists())
+
+    def test_voting_after_the_winner_is_frozen_is_rejected(self):
+        Event.objects.filter(pk=self.event.pk).update(winner_frozen=True)
+        self.client.force_authenticate(self.member)
+        resp = self.client.post(f"/event-locations/{self.cafe.id}/vote/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data["code"], "voting_closed")
+
+
+class UnvoteTests(VotingBaseTests):
+    def test_member_can_withdraw_a_vote(self):
+        self.client.force_authenticate(self.member)
+        self.client.post(f"/event-locations/{self.cafe.id}/vote/")
+        resp = self.client.delete(f"/event-locations/{self.cafe.id}/vote/")
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(LocationVote.objects.exists())
+
+    def test_withdrawing_a_vote_that_was_never_cast_is_404(self):
+        self.client.force_authenticate(self.member)
+        resp = self.client.delete(f"/event-locations/{self.cafe.id}/vote/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(resp.data["code"], "vote_not_found")
+
+    def test_withdrawing_another_members_vote_is_404(self):
+        LocationVote.objects.create(location=self.cafe, voted_by=self.other)
+        self.client.force_authenticate(self.member)
+        resp = self.client.delete(f"/event-locations/{self.cafe.id}/vote/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(LocationVote.objects.filter(voted_by=self.other).exists())
+
+    def test_unauthenticated_cannot_withdraw_a_vote(self):
+        resp = self.client.delete(f"/event-locations/{self.cafe.id}/vote/")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class LocationDetailRouteTests(VotingBaseTests):
+    """Detail routes must resolve without the ?event= list filter."""
+
+    def test_retrieve_without_event_query_param_succeeds(self):
+        self.client.force_authenticate(self.member)
+        resp = self.client.get(f"/event-locations/{self.cafe.id}/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["id"], self.cafe.id)
+
+    def test_list_without_event_query_param_is_empty(self):
+        self.client.force_authenticate(self.member)
+        resp = self.client.get("/event-locations/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data, [])
+
+    def test_non_numeric_location_id_is_404(self):
+        self.client.force_authenticate(self.member)
+        resp = self.client.get("/event-locations/abc/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_vote_count_reflects_cast_votes(self):
+        LocationVote.objects.create(location=self.cafe, voted_by=self.member)
+        LocationVote.objects.create(location=self.cafe, voted_by=self.other)
+        self.client.force_authenticate(self.member)
+        resp = self.client.get(f"/event-locations/?event={self.event.id}")
+        counts = {row["name"]: row["vote_count"] for row in resp.data}
+        self.assertEqual(counts, {"Cafe": 2, "Diner": 0})
+
+
+class TallyEndpointTests(VotingBaseTests):
+    def test_tally_ranks_locations_and_reports_my_vote(self):
+        LocationVote.objects.create(location=self.diner, voted_by=self.member)
+        LocationVote.objects.create(location=self.diner, voted_by=self.other)
+        self.client.force_authenticate(self.member)
+        resp = self.client.get(f"/events/{self.event.id}/tally/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [(row["name"], row["vote_count"]) for row in resp.data["locations"]],
+            [("Diner", 2), ("Cafe", 0)],
+        )
+        self.assertEqual(resp.data["my_vote"], self.diner.id)
+        self.assertTrue(resp.data["voting_open"])
+        self.assertFalse(resp.data["winner_frozen"])
+        self.assertIsNone(resp.data["winning_location"])
+
+    def test_tally_my_vote_is_null_when_the_member_has_not_voted(self):
+        self.client.force_authenticate(self.member)
+        resp = self.client.get(f"/events/{self.event.id}/tally/")
+        self.assertIsNone(resp.data["my_vote"])
+
+    def test_tally_does_not_freeze_the_winner_on_read(self):
+        LocationVote.objects.create(location=self.cafe, voted_by=self.member)
+        self._start_event_now()
+        self.client.force_authenticate(self.member)
+        resp = self.client.get(f"/events/{self.event.id}/tally/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.event.refresh_from_db()
+        self.assertFalse(self.event.winner_frozen)
+        self.assertIsNone(self.event.winning_location)
+
+    def test_non_member_cannot_read_the_tally(self):
+        self.client.force_authenticate(self.outsider)
+        resp = self.client.get(f"/events/{self.event.id}/tally/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_unauthenticated_cannot_read_the_tally(self):
+        resp = self.client.get(f"/events/{self.event.id}/tally/")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class FreezeWinnerTests(VotingBaseTests):
+    def test_most_voted_location_wins(self):
+        LocationVote.objects.create(location=self.diner, voted_by=self.member)
+        LocationVote.objects.create(location=self.diner, voted_by=self.other)
+        freeze_winner(self.event.id)
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.winning_location_id, self.diner.id)
+        self.assertTrue(self.event.winner_frozen)
+
+    def test_a_tie_is_broken_at_random_among_the_tied_locations(self):
+        LocationVote.objects.create(location=self.cafe, voted_by=self.member)
+        LocationVote.objects.create(location=self.diner, voted_by=self.other)
+        with mock.patch("events.voting.random.choice") as choice:
+            choice.side_effect = lambda candidates: candidates[-1]
+            freeze_winner(self.event.id)
+            tied = [loc.id for loc in choice.call_args.args[0]]
+        self.assertEqual(sorted(tied), sorted([self.cafe.id, self.diner.id]))
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.winning_location_id, self.diner.id)
+
+    def test_the_other_tied_location_is_equally_reachable(self):
+        LocationVote.objects.create(location=self.cafe, voted_by=self.member)
+        LocationVote.objects.create(location=self.diner, voted_by=self.other)
+        with mock.patch("events.voting.random.choice", lambda candidates: candidates[0]):
+            freeze_winner(self.event.id)
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.winning_location_id, self.cafe.id)
+
+    def test_a_location_with_fewer_votes_never_enters_the_tiebreak(self):
+        LocationVote.objects.create(location=self.cafe, voted_by=self.member)
+        with mock.patch("events.voting.random.choice") as choice:
+            choice.side_effect = lambda candidates: candidates[0]
+            freeze_winner(self.event.id)
+            tied = [loc.id for loc in choice.call_args.args[0]]
+        self.assertEqual(tied, [self.cafe.id])
+
+    def test_an_event_with_no_votes_freezes_without_a_winner(self):
+        freeze_winner(self.event.id)
+        self.event.refresh_from_db()
+        self.assertTrue(self.event.winner_frozen)
+        self.assertIsNone(self.event.winning_location)
+
+    def test_a_frozen_winner_is_never_recomputed(self):
+        LocationVote.objects.create(location=self.cafe, voted_by=self.member)
+        freeze_winner(self.event.id)
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.winning_location_id, self.cafe.id)
+
+        LocationVote.objects.create(location=self.diner, voted_by=self.other)
+        LocationVote.objects.create(
+            location=self.diner,
+            voted_by=User.objects.create_user(username="v3", password="pw12345678"),
+        )
+        freeze_winner(self.event.id)
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.winning_location_id, self.cafe.id)
+
+    def test_freezing_a_missing_event_returns_none(self):
+        self.assertIsNone(freeze_winner(self.event.id + 999))
+
+
+class FreezeDueWinnersTests(VotingBaseTests):
+    def test_only_started_events_are_frozen(self):
+        LocationVote.objects.create(location=self.cafe, voted_by=self.member)
+        self.assertEqual(freeze_due_winners(), 0)
+        self.event.refresh_from_db()
+        self.assertFalse(self.event.winner_frozen)
+
+        self._start_event_now()
+        self.assertEqual(freeze_due_winners(), 1)
+        self.event.refresh_from_db()
+        self.assertTrue(self.event.winner_frozen)
+        self.assertEqual(self.event.winning_location_id, self.cafe.id)
+
+    def test_already_frozen_events_are_not_revisited(self):
+        self._start_event_now()
+        self.assertEqual(freeze_due_winners(), 1)
+        self.assertEqual(freeze_due_winners(), 0)

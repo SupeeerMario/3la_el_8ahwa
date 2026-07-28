@@ -15,10 +15,22 @@ services:
       retries: 5
       start_period: 10s
 
+  redis-prod:
+    image: redis:7-alpine
+    container_name: ala_el_8ahwa_redis_prod
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   django-app-prod:
     build: .
     depends_on:
       db-prod:
+        condition: service_healthy
+      redis-prod:
         condition: service_healthy
     volumes:
       - ./static:/app/staticfiles
@@ -27,6 +39,42 @@ services:
     environment:
       - DJANGO_ENV=prod
     container_name: ala_el_8ahwa_app_prod
+
+  celery-worker-prod:
+    build: .
+    command: celery -A ala_el_8ahwa worker --loglevel=info --concurrency=2
+    depends_on:
+      django-app-prod:
+        condition: service_healthy
+      redis-prod:
+        condition: service_healthy
+    env_file:
+      - .env.prod
+    environment:
+      - DJANGO_ENV=prod
+    container_name: ala_el_8ahwa_celery_worker_prod
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A ala_el_8ahwa inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  celery-beat-prod:
+    build: .
+    command: celery -A ala_el_8ahwa beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    depends_on:
+      django-app-prod:
+        condition: service_healthy
+      redis-prod:
+        condition: service_healthy
+    env_file:
+      - .env.prod
+    environment:
+      - DJANGO_ENV=prod
+    container_name: ala_el_8ahwa_celery_beat_prod
+    healthcheck:
+      disable: true
 
   nginx-prod:
     build:

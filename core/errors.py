@@ -16,6 +16,9 @@ INVALID_ROLE = "invalid_role"
 
 EVENT_NOT_FOUND = "event_not_found"
 VOTING_CLOSED = "voting_closed"
+LOCATION_NOT_FOUND = "location_not_found"
+ALREADY_VOTED = "already_voted"
+VOTE_NOT_FOUND = "vote_not_found"
 
 USER_NOT_FOUND = "user_not_found"
 INVITE_PENDING = "invite_pending"

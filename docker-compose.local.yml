@@ -15,11 +15,23 @@ services:
       retries: 5
       start_period: 10s
 
+  redis-local:
+    image: redis:7-alpine
+    container_name: ala_el_8ahwa_redis_local
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   django-app-local:
     build: .
-    command: sh -c "python manage.py createcachetable && python manage.py runserver 0.0.0.0:8000"
+    command: sh -c "python manage.py migrate --noinput && python manage.py createcachetable && python manage.py runserver 0.0.0.0:8000"
     depends_on:
       db-local:
+        condition: service_healthy
+      redis-local:
         condition: service_healthy
     volumes:
       - .:/app
@@ -29,6 +41,46 @@ services:
     environment:
       - DJANGO_ENV=local
     container_name: ala_el_8ahwa_app_local
+
+  celery-worker-local:
+    build: .
+    command: celery -A ala_el_8ahwa worker --loglevel=info --concurrency=2
+    depends_on:
+      django-app-local:
+        condition: service_healthy
+      redis-local:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    env_file:
+      - .env.local
+    environment:
+      - DJANGO_ENV=local
+    container_name: ala_el_8ahwa_celery_worker_local
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A ala_el_8ahwa inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  celery-beat-local:
+    build: .
+    command: celery -A ala_el_8ahwa beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    depends_on:
+      django-app-local:
+        condition: service_healthy
+      redis-local:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    env_file:
+      - .env.local
+    environment:
+      - DJANGO_ENV=local
+    container_name: ala_el_8ahwa_celery_beat_local
+    healthcheck:
+      disable: true
 
   nginx-local:
     build:
