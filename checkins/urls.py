@@ -1,6 +1,11 @@
-from django.urls import path
-from . import views
+from rest_framework.routers import DefaultRouter
 
-urlpatterns = [
-    
-]
+from .views import CheckInViewSet
+
+
+router = DefaultRouter()
+
+router.register(r'', CheckInViewSet, basename='checkin')
+
+
+urlpatterns = router.urls
