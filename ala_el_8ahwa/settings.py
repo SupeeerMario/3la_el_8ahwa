@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 from pathlib import Path
 from datetime import timedelta
 import os
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 
@@ -21,7 +22,22 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 env = os.getenv('DJANGO_ENV', 'local')
 load_dotenv(BASE_DIR / f'.env.{env}')
 
-SECRET_KEY = os.getenv("DB_SECRET_KEY")
+
+def required_env(name):
+    value = os.getenv(name)
+    if not value:
+        raise ImproperlyConfigured(
+            f"{name} is not set. It is required and has no default; "
+            f"add it to .env.{env}. See .env.example for the full list."
+        )
+    return value
+
+
+def required_env_list(name):
+    return [item.strip() for item in required_env(name).split(",") if item.strip()]
+
+
+SECRET_KEY = required_env("DB_SECRET_KEY")
 DEBUG = os.getenv("DEBUG") == "True"
 
 
@@ -35,9 +51,33 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 
-ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS").split(",")
+ALLOWED_HOSTS = required_env_list("DJANGO_ALLOWED_HOSTS")
 
-CSRF_TRUSTED_ORIGINS = os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS").split(",")
+CSRF_TRUSTED_ORIGINS = required_env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "standard": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "standard"},
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": os.getenv("DJANGO_LOG_LEVEL", "INFO"),
+    },
+}
+
+SECURE_SSL_ENABLED = os.getenv("SECURE_SSL_ENABLED", "False") == "True"
+
+SECURE_SSL_REDIRECT = SECURE_SSL_ENABLED
+SESSION_COOKIE_SECURE = SECURE_SSL_ENABLED
+CSRF_COOKIE_SECURE = SECURE_SSL_ENABLED
+SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "0")) if SECURE_SSL_ENABLED else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+SECURE_HSTS_PRELOAD = SECURE_HSTS_SECONDS > 0
 
 # Application definition
 
@@ -95,12 +135,12 @@ WSGI_APPLICATION = 'ala_el_8ahwa.wsgi.application'
 
 DATABASES = {
     'default': {
-        "ENGINE": os.getenv("DB_ENGINE"),
-        "NAME": os.getenv("DB_NAME"),
-        "USER": os.getenv("DB_USERNAME"),
-        "PASSWORD": os.getenv("DB_PASSWORD"),
-        "HOST": os.getenv("DB_HOST"),
-        "PORT": os.getenv("DB_PORT")
+        "ENGINE": required_env("DB_ENGINE"),
+        "NAME": required_env("DB_NAME"),
+        "USER": required_env("DB_USERNAME"),
+        "PASSWORD": required_env("DB_PASSWORD"),
+        "HOST": required_env("DB_HOST"),
+        "PORT": required_env("DB_PORT")
     }
 }
 
@@ -161,6 +201,7 @@ REST_FRAMEWORK = {
         "password_reset_email": os.getenv("THROTTLE_PASSWORD_RESET_EMAIL", "3/hour"),
         "password_reset_ip": os.getenv("THROTTLE_PASSWORD_RESET_IP", "10/hour"),
         "group_messages": os.getenv("THROTTLE_GROUP_MESSAGES", "30/min"),
+        "send_invite": os.getenv("THROTTLE_SEND_INVITE", "20/hour"),
     },
 }
 
