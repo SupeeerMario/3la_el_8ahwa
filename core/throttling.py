@@ -123,6 +123,34 @@ class SendInviteThrottle(SimpleRateThrottle):
         }
 
 
+class JoinGroupThrottle(SimpleRateThrottle):
+    """Redemption attempts per user. The short code is eight characters, so
+    this is what stands between it and a brute-force search."""
+
+    scope = "join_group"
+
+    def get_cache_key(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return None
+        return self.cache_format % {
+            "scope": self.scope,
+            "ident": request.user.pk,
+        }
+
+
+class InvitePreviewThrottle(SimpleRateThrottle):
+    """Preview lookups per client IP. Unauthenticated, and it answers with a
+    group name, so it is the other side of the same brute-force surface."""
+
+    scope = "invite_preview"
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {
+            "scope": self.scope,
+            "ident": self.get_ident(request),
+        }
+
+
 class GroupMessagesThrottle(SimpleRateThrottle):
     """Backstop on room polling, per user. Set well above what a correct client
     produces — it exists to catch a runaway loop, not to shape the client."""

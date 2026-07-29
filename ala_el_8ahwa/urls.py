@@ -17,8 +17,12 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 
+from groups.landing import invite_landing
+
 urlpatterns = [
     path('admin/', admin.site.urls),
+
+    path('invite/<str:value>/', invite_landing, name='invite-landing'),
 
 
     path('users/', include('users.urls')),

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{% if found %}Join {{ group.name }} on 3la el 8ahwa{% else %}Invite not found{% endif %}</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; padding: 2rem 1.25rem;
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; justify-content: center;
+  }
+  main { width: 100%; max-width: 26rem; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  p { margin: .5rem 0; }
+  .muted { opacity: .7; font-size: .9rem; }
+  .code {
+    font: 600 1.75rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: .18em; padding: .9rem 1rem; margin: 1.25rem 0;
+    border: 1px solid currentColor; border-radius: .5rem; text-align: center;
+  }
+  .actions { display: flex; flex-direction: column; gap: .6rem; margin-top: 1.25rem; }
+  a.button {
+    display: block; padding: .8rem 1rem; border-radius: .5rem; text-align: center;
+    text-decoration: none; border: 1px solid currentColor; color: inherit;
+  }
+  a.primary { background: #1c1c1e; color: #fff; border-color: #1c1c1e; }
+  @media (prefers-color-scheme: dark) { a.primary { background: #f2f2f7; color: #1c1c1e; border-color: #f2f2f7; } }
+</style>
+</head>
+<body>
+<main>
+{% if not found %}
+  <h1>Invite not found</h1>
+  <p class="muted">This link does not match any invite. Ask whoever sent it for a new one.</p>
+{% elif not valid %}
+  <h1>{{ group.name }}</h1>
+  <p>{{ reason_text }}</p>
+  <p class="muted">Ask {% if invited_by %}{{ invited_by.display_name|default:invited_by.username }}{% else %}an admin{% endif %} for a new invite link.</p>
+{% else %}
+  <h1>Join {{ group.name }}</h1>
+  <p>{% if invited_by %}{{ invited_by.display_name|default:invited_by.username }} invited you{% else %}You have been invited{% endif %} to a group on <strong>3la el 8ahwa</strong>.</p>
+
+  <div class="actions">
+    <a class="button primary" href="{{ deep_link }}">Open in the app</a>
+  </div>
+
+  <p class="muted">Do not have the app yet? Install it, create an account, and enter this code:</p>
+  <div class="code">{{ code }}</div>
+
+  <div class="actions">
+    {% if app_store_url %}<a class="button" href="{{ app_store_url }}">Download for iPhone</a>{% endif %}
+    {% if play_store_url %}<a class="button" href="{{ play_store_url }}">Download for Android</a>{% endif %}
+  </div>
+{% endif %}
+</main>
+</body>
+</html>

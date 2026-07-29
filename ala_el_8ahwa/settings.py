@@ -70,6 +70,11 @@ LOGGING = {
     },
 }
 
+INVITE_DEEP_LINK = os.getenv("INVITE_DEEP_LINK", "alael8ahwa://join")
+INVITE_LANDING_BASE_URL = os.getenv("INVITE_LANDING_BASE_URL", "").rstrip("/")
+APP_STORE_URL = os.getenv("APP_STORE_URL", "")
+PLAY_STORE_URL = os.getenv("PLAY_STORE_URL", "")
+
 SECURE_SSL_ENABLED = os.getenv("SECURE_SSL_ENABLED", "False") == "True"
 
 SECURE_SSL_REDIRECT = SECURE_SSL_ENABLED
@@ -202,6 +207,8 @@ REST_FRAMEWORK = {
         "password_reset_ip": os.getenv("THROTTLE_PASSWORD_RESET_IP", "10/hour"),
         "group_messages": os.getenv("THROTTLE_GROUP_MESSAGES", "30/min"),
         "send_invite": os.getenv("THROTTLE_SEND_INVITE", "20/hour"),
+        "join_group": os.getenv("THROTTLE_JOIN_GROUP", "10/hour"),
+        "invite_preview": os.getenv("THROTTLE_INVITE_PREVIEW", "30/hour"),
     },
 }
 

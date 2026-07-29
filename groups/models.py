@@ -11,6 +11,14 @@ User = settings.AUTH_USER_MODEL
 def generate_invite_token():
     return secrets.token_urlsafe(32)
 
+
+INVITE_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+INVITE_CODE_LENGTH = 8
+
+
+def generate_invite_code():
+    return "".join(secrets.choice(INVITE_CODE_ALPHABET) for _ in range(INVITE_CODE_LENGTH))
+
 class Group(models.Model):
     name = models.CharField(max_length=50)
     
@@ -88,6 +96,13 @@ class GroupInviteToken(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_invite_tokens")
 
     token = models.CharField(max_length=64, unique=True, default=generate_invite_token)
+
+    code = models.CharField(
+        max_length=INVITE_CODE_LENGTH,
+        unique=True,
+        db_index=True,
+        default=generate_invite_code,
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 

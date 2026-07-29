@@ -9,9 +9,10 @@ from .serializers import (
     GroupMemberSerializer,
     GroupInvitaionSerializer,
     GroupInviteTokenSerializer,
+    InvitePreviewSerializer,
     MessageSerializer,
 )
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework import status
 from django.db import transaction
@@ -21,8 +22,13 @@ from django.utils import timezone
 from core import errors, storage
 from core.errors import error_response
 from core.permissions import IsGroupAdmin
-from core.throttling import GroupMessagesThrottle, SendInviteThrottle
-from . import cursors, room
+from core.throttling import (
+    GroupMessagesThrottle,
+    InvitePreviewThrottle,
+    JoinGroupThrottle,
+    SendInviteThrottle,
+)
+from . import cursors, invites, room
 from notifications.services import notify, notify_group
 # Create your views here.
 
@@ -40,6 +46,15 @@ def _as_int(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+INVITE_FAILURE_MESSAGES = {
+    errors.INVITE_TOKEN_NOT_FOUND: 'This invite link is not valid',
+    errors.INVITE_TOKEN_REVOKED: 'This invite link has been revoked',
+    errors.INVITE_TOKEN_EXPIRED: 'This invite link has expired',
+    errors.INVITE_TOKEN_EXHAUSTED: 'This invite link has already been used the maximum number of times',
+    errors.ALREADY_MEMBER: 'You are already a member of this group',
+}
 
 
 def _reassign_creator(group, departing_user_id):
@@ -512,84 +527,51 @@ class GroupsViewSet(ModelViewSet):
 
     @action(
         detail=False,
+        methods=['GET'],
+        permission_classes = [AllowAny],
+        authentication_classes = [],
+        throttle_classes = [InvitePreviewThrottle],
+        url_path='invite/(?P<value>[^/]+)'
+    )
+    def invite_preview(self, request, value=None):
+        invite_token = invites.token_for(value)
+
+        if invite_token is None:
+            return error_response(
+                errors.INVITE_TOKEN_NOT_FOUND,
+                'This invite link is not valid',
+                status.HTTP_404_NOT_FOUND
+            )
+
+        return Response(InvitePreviewSerializer(invite_token).data)
+
+
+    @action(
+        detail=False,
         methods=['POST'],
-        permission_classes = [IsAuthenticated]
+        permission_classes = [IsAuthenticated],
+        throttle_classes = [JoinGroupThrottle]
     )
     def join(self, request):
-        raw_token = request.data.get('token')
+        raw_token = request.data.get('token') or request.data.get('code')
 
         if not raw_token:
             return error_response(
                 errors.MISSING_FIELD,
-                'token is required',
+                'token or code is required',
                 status.HTTP_400_BAD_REQUEST
             )
 
-        with transaction.atomic():
-            try:
-                invite_token = GroupInviteToken.objects.select_for_update().get(
-                    token = raw_token
-                )
+        group, failure = invites.redeem(raw_token, request.user)
 
-            except GroupInviteToken.DoesNotExist:
-                return error_response(
-                    errors.INVITE_TOKEN_NOT_FOUND,
-                    'This invite link is not valid',
-                    status.HTTP_404_NOT_FOUND
-                )
-
-            if invite_token.revoked:
-                return error_response(
-                    errors.INVITE_TOKEN_REVOKED,
-                    'This invite link has been revoked',
-                    status.HTTP_400_BAD_REQUEST
-                )
-
-            if invite_token.is_expired:
-                return error_response(
-                    errors.INVITE_TOKEN_EXPIRED,
-                    'This invite link has expired',
-                    status.HTTP_400_BAD_REQUEST
-                )
-
-            if invite_token.is_exhausted:
-                return error_response(
-                    errors.INVITE_TOKEN_EXHAUSTED,
-                    'This invite link has already been used the maximum number of times',
-                    status.HTTP_400_BAD_REQUEST
-                )
-
-            group = invite_token.group
-
-            if GroupMember.objects.filter(user = request.user, group = group).exists():
-                return error_response(
-                    errors.ALREADY_MEMBER,
-                    'You are already a member of this group',
-                    status.HTTP_400_BAD_REQUEST
-                )
-
-            GroupMember.objects.create(user = request.user, group = group, role = "member")
-
-            invite_token.uses += 1
-            invite_token.save(update_fields=["uses"])
-
-            GroupInvitaion.objects.filter(
-                group = group, invited_user = request.user
-            ).delete()
-
-        room.member_joined(group, request.user)
-
-        notify_group(
-            group,
-            'new_member',
-            {
-                'group_id': group.id,
-                'group_name': group.name,
-                'user_id': request.user.id,
-                'username': request.user.username,
-            },
-            exclude=[request.user],
-        )
+        if failure is not None:
+            return error_response(
+                failure,
+                INVITE_FAILURE_MESSAGES[failure],
+                status.HTTP_404_NOT_FOUND
+                if failure == errors.INVITE_TOKEN_NOT_FOUND
+                else status.HTTP_400_BAD_REQUEST
+            )
 
         joined = Group.objects.filter(pk = group.pk).annotate(
             members_count = Count('members')
