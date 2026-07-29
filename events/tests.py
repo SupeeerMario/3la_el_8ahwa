@@ -43,6 +43,13 @@ class EventCreateTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
         self.assertTrue(Event.objects.filter(title="Meetup", created_by=self.user).exists())
 
+    def test_create_response_carries_the_new_event_id(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.post("/events/", self._payload())
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        event = Event.objects.get(title="Meetup")
+        self.assertEqual(resp.data["event"]["id"], event.id)
+
     def test_non_member_cannot_create_event(self):
         outsider = User.objects.create_user(username="outsider", password="pw12345678")
         self.client.force_authenticate(outsider)
@@ -166,7 +173,19 @@ class EventLocationCreateTests(APITestCase):
         outsider = User.objects.create_user(username="outsiderL", password="pw12345678")
         self.client.force_authenticate(outsider)
         resp = self.client.post("/event-locations/", self._payload(event))
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(resp.data["code"], "event_not_found")
+
+    def test_a_non_member_cannot_tell_a_real_event_from_a_missing_one(self):
+        event = self._upcoming_event()
+        outsider = User.objects.create_user(username="probeL", password="pw12345678")
+        self.client.force_authenticate(outsider)
+        real = self.client.post("/event-locations/", self._payload(event))
+        missing = self.client.post("/event-locations/", {
+            **self._payload(event), "event_id": event.id + 999,
+        })
+        self.assertEqual(real.status_code, missing.status_code)
+        self.assertEqual(real.data["code"], missing.data["code"])
 
     def test_cannot_propose_for_unknown_event(self):
         self.client.force_authenticate(self.user)

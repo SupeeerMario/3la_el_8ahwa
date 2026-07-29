@@ -108,8 +108,15 @@ class GroupMemberBoardTests(LeaderboardBaseTests):
     def test_a_non_member_is_refused(self):
         self.client.force_authenticate(self.outsider)
         resp = self.client.get(f"/leaderboard/?group={self.group.id}")
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(resp.data["code"], "not_a_member")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(resp.data["code"], "group_not_found")
+
+    def test_a_non_member_cannot_tell_a_real_group_from_a_missing_one(self):
+        self.client.force_authenticate(self.outsider)
+        real = self.client.get(f"/leaderboard/?group={self.group.id}")
+        missing = self.client.get(f"/leaderboard/?group={self.group.id + 999}")
+        self.assertEqual(real.status_code, missing.status_code)
+        self.assertEqual(real.data["code"], missing.data["code"])
 
     def test_an_unknown_group_is_404(self):
         self.client.force_authenticate(self.a)
