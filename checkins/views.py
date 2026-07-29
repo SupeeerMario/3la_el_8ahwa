@@ -50,24 +50,14 @@ class CheckInViewSet(mixins.CreateModelMixin,
         current_user = request.user
 
         try:
-            event = Event.objects.select_related('winning_location').get(id=event_id)
+            event = Event.objects.select_related('winning_location').get(
+                id=event_id, group__members__user=current_user
+            )
         except Event.DoesNotExist:
             return error_response(
                 errors.EVENT_NOT_FOUND,
                 'Event not found',
                 status.HTTP_404_NOT_FOUND
-            )
-
-        is_member = GroupMember.objects.filter(
-            user=current_user,
-            group=event.group
-        ).exists()
-
-        if not is_member:
-            return error_response(
-                errors.NOT_A_MEMBER,
-                'You are not a member of this group',
-                status.HTTP_403_FORBIDDEN
             )
 
         if not event.active:

@@ -16,7 +16,12 @@ class Group(models.Model):
     
     desc = models.TextField(blank=True)
 
-    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_groups")
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="created_groups",
+    )
 
     image_version = models.PositiveBigIntegerField(null=True, blank=True)
 

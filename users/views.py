@@ -1,3 +1,5 @@
+import logging
+
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
@@ -36,6 +38,8 @@ def _blacklist_outstanding_tokens(user):
     for token in OutstandingToken.objects.filter(user=user):
         BlacklistedToken.objects.get_or_create(token=token)
 
+
+logger = logging.getLogger(__name__)
 
 EMAIL_TAKEN_MESSAGE = "This email is already in use"
 
@@ -178,16 +182,19 @@ class UserViewSet(viewsets.ViewSet):
             uid = serializer.uid_for(user)
             token = serializer.token_for(user)
             link = f"{settings.PASSWORD_RESET_DEEP_LINK}?uid={uid}&token={token}"
-            send_mail(
-                subject="Reset your 3la el 8ahwa password",
-                message=(
-                    f"Open this link to choose a new password:\n\n{link}\n\n"
-                    f"If you did not ask for this, you can ignore this email."
-                ),
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-                fail_silently=True,
-            )
+            try:
+                send_mail(
+                    subject="Reset your 3la el 8ahwa password",
+                    message=(
+                        f"Open this link to choose a new password:\n\n{link}\n\n"
+                        f"If you did not ask for this, you can ignore this email."
+                    ),
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=False,
+                )
+            except Exception:
+                logger.exception("password reset email failed for user id %s", user.pk)
 
         return Response(
             {"message": "If that email has an account, a reset link has been sent"},

@@ -40,23 +40,12 @@ class LeaderboardViewSet(ViewSet):
             )
 
         try:
-            group = Group.objects.get(pk=group_id)
+            group = Group.objects.get(pk=group_id, members__user=request.user)
         except Group.DoesNotExist:
             return error_response(
                 errors.GROUP_NOT_FOUND,
                 'Group not found',
                 status.HTTP_404_NOT_FOUND
-            )
-
-        is_member = GroupMember.objects.filter(
-            user=request.user, group=group
-        ).exists()
-
-        if not is_member:
-            return error_response(
-                errors.NOT_A_MEMBER,
-                'You are not a member of this group',
-                status.HTTP_403_FORBIDDEN
             )
 
         return Response({

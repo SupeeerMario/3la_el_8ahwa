@@ -7,6 +7,7 @@ class EventSerializer(serializers.ModelSerializer):
     class Meta:
         model = Event
         fields = [
+            'id',
             'title',
             'text',
             'start_time',
@@ -15,7 +16,7 @@ class EventSerializer(serializers.ModelSerializer):
             'active',
             'finished'
         ]
-        read_only_fields = ['created_at', 'active', 'finished']
+        read_only_fields = ['id', 'created_at', 'active', 'finished']
 
     def validate_start_time(self, value):
         if value < timezone.now():

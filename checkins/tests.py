@@ -134,9 +134,16 @@ class CheckInCreateTests(CheckInBaseTests):
     def test_non_member_cannot_check_in(self):
         self.client.force_authenticate(self.outsider)
         resp = self.client.post("/checkins/", self._payload())
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(resp.data["code"], "not_a_member")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(resp.data["code"], "event_not_found")
         self.assertFalse(CheckIn.objects.exists())
+
+    def test_a_non_member_cannot_tell_a_real_event_from_a_missing_one(self):
+        self.client.force_authenticate(self.outsider)
+        real = self.client.post("/checkins/", self._payload())
+        missing = self.client.post("/checkins/", self._payload(event_id=self.event.id + 999))
+        self.assertEqual(real.status_code, missing.status_code)
+        self.assertEqual(real.data["code"], missing.data["code"])
 
     def test_unknown_event_is_404(self):
         self.client.force_authenticate(self.member)
