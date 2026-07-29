@@ -1142,3 +1142,183 @@ class RoomSystemMessageTests(APITestCase):
         self.client.force_authenticate(outsider)
         self.client.post(f"/groups/{self.group.id}/messages/", {"body": "hi"})
         self.assertFalse(Message.objects.filter(kind="system").exists())
+
+
+class InviteCodeTests(APITestCase):
+    """Covers the short code, the unauthenticated preview and the landing page."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(username="codeadmin", password="pw12345678")
+        self.joiner = User.objects.create_user(username="codejoiner", password="pw12345678")
+        self.group = Group.objects.create(name="Code Crew", created_by=self.admin)
+        GroupMember.objects.create(group=self.group, user=self.admin, role="admin")
+        self.token = GroupInviteToken.objects.create(
+            group=self.group,
+            created_by=self.admin,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+
+    def test_a_code_is_generated_and_typable(self):
+        self.assertEqual(len(self.token.code), 8)
+        self.assertFalse(set(self.token.code) & set("01ILOU"))
+        self.assertEqual(self.token.code, self.token.code.upper())
+
+    def test_codes_are_distinct_across_tokens(self):
+        other = GroupInviteToken.objects.create(
+            group=self.group,
+            created_by=self.admin,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        self.assertNotEqual(other.code, self.token.code)
+
+    def test_joining_with_the_short_code_works(self):
+        self.client.force_authenticate(self.joiner)
+        resp = self.client.post("/groups/join/", {"code": self.token.code})
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(
+            GroupMember.objects.filter(group=self.group, user=self.joiner).exists()
+        )
+
+    def test_a_lowercase_code_still_joins(self):
+        self.client.force_authenticate(self.joiner)
+        resp = self.client.post("/groups/join/", {"code": self.token.code.lower()})
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+
+    def test_joining_with_the_long_token_still_works(self):
+        self.client.force_authenticate(self.joiner)
+        resp = self.client.post("/groups/join/", {"token": self.token.token})
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+
+    def test_preview_needs_no_authentication(self):
+        resp = self.client.get(f"/groups/invite/{self.token.code}/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.data["valid"])
+        self.assertEqual(resp.data["group"]["name"], "Code Crew")
+        self.assertEqual(resp.data["invited_by"]["username"], "codeadmin")
+
+    def test_preview_never_exposes_the_long_token_or_a_member_list(self):
+        resp = self.client.get(f"/groups/invite/{self.token.code}/")
+        body = str(resp.data)
+        self.assertNotIn(self.token.token, body)
+        self.assertNotIn("email", body)
+        self.assertNotIn("members", resp.data["group"].keys() - {"members_count"})
+
+    def test_preview_reports_an_expired_token_rather_than_404(self):
+        self.token.expires_at = timezone.now() - timedelta(hours=1)
+        self.token.save(update_fields=["expires_at"])
+        resp = self.client.get(f"/groups/invite/{self.token.code}/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(resp.data["valid"])
+        self.assertEqual(resp.data["reason"], "invite_token_expired")
+
+    def test_preview_of_an_unknown_code_is_404(self):
+        resp = self.client.get("/groups/invite/ZZZZZZZZ/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(resp.data["code"], "invite_token_not_found")
+
+    def test_preview_is_throttled(self):
+        from django.core.cache import cache
+        from core.throttling import InvitePreviewThrottle
+
+        cache.clear()
+        with patch.object(InvitePreviewThrottle, "THROTTLE_RATES", {"invite_preview": "3/hour"}):
+            codes = [
+                self.client.get(f"/groups/invite/{self.token.code}/").status_code
+                for _ in range(4)
+            ]
+
+        self.assertEqual(codes[3], status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_join_is_throttled(self):
+        from django.core.cache import cache
+        from core.throttling import JoinGroupThrottle
+
+        cache.clear()
+        self.client.force_authenticate(self.joiner)
+        with patch.object(JoinGroupThrottle, "THROTTLE_RATES", {"join_group": "2/hour"}):
+            codes = [
+                self.client.post("/groups/join/", {"code": "ZZZZZZZZ"}).status_code
+                for _ in range(3)
+            ]
+
+        self.assertEqual(codes[2], status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_the_landing_page_shows_the_group_and_the_code(self):
+        resp = self.client.get(f"/invite/{self.token.code}/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        body = resp.content.decode()
+        self.assertIn("Code Crew", body)
+        self.assertIn(self.token.code, body)
+        self.assertNotIn(self.token.token, body)
+
+    def test_the_landing_page_404s_on_an_unknown_code(self):
+        resp = self.client.get("/invite/ZZZZZZZZ/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_the_token_payload_carries_the_code(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.post(f"/groups/{self.group.id}/invite_tokens/", {})
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(resp.data["code"]), 8)
+
+
+class RegisterWithInviteTests(APITestCase):
+    """Covers redeeming an invite as part of registration."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(username="reginviter", password="pw12345678")
+        self.group = Group.objects.create(name="Reg Crew", created_by=self.admin)
+        GroupMember.objects.create(group=self.group, user=self.admin, role="admin")
+        self.token = GroupInviteToken.objects.create(
+            group=self.group,
+            created_by=self.admin,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+
+    def _payload(self, **over):
+        data = {
+            "username": "newcomer",
+            "email": "newcomer@example.com",
+            "password": "tr0mbone-Vault-91",
+        }
+        data.update(over)
+        return data
+
+    def test_registering_with_a_code_joins_the_group(self):
+        resp = self.client.post(
+            "/users/register/", self._payload(invite_token=self.token.code)
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(resp.data["invite"]["joined"])
+        self.assertEqual(resp.data["invite"]["group"]["name"], "Reg Crew")
+        self.assertTrue(
+            GroupMember.objects.filter(
+                group=self.group, user__username="newcomer"
+            ).exists()
+        )
+
+    def test_a_bad_invite_still_creates_the_account(self):
+        resp = self.client.post(
+            "/users/register/", self._payload(invite_token="ZZZZZZZZ")
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(resp.data["invite"]["joined"])
+        self.assertEqual(resp.data["invite"]["code"], "invite_token_not_found")
+        self.assertTrue(User.objects.filter(username="newcomer").exists())
+        self.assertFalse(
+            GroupMember.objects.filter(user__username="newcomer").exists()
+        )
+
+    def test_registering_without_an_invite_is_unchanged(self):
+        resp = self.client.post("/users/register/", self._payload())
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertNotIn("invite", resp.data)
+
+    def test_an_expired_invite_does_not_block_registration(self):
+        self.token.expires_at = timezone.now() - timedelta(hours=1)
+        self.token.save(update_fields=["expires_at"])
+        resp = self.client.post(
+            "/users/register/", self._payload(invite_token=self.token.code)
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data["invite"]["code"], "invite_token_expired")

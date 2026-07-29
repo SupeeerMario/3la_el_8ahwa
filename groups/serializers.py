@@ -1,7 +1,8 @@
+from django.conf import settings
 from rest_framework import serializers
 from .models import Group, GroupMember,GroupInvitaion, GroupInviteToken, Message
 from users.serializers import PublicUserSerializer
-from core import storage
+from core import errors, storage
 
 class GroupSerializer(serializers.ModelSerializer):
     members_count = serializers.IntegerField(read_only=True)
@@ -86,6 +87,7 @@ class GroupInvitaionSerializer(serializers.ModelSerializer):
 class GroupInviteTokenSerializer(serializers.ModelSerializer):
     group = InvitationGroupSerializer(read_only=True)
     created_by = PublicUserSerializer(read_only=True)
+    share_url = serializers.SerializerMethodField()
 
     class Meta:
         model = GroupInviteToken
@@ -94,6 +96,8 @@ class GroupInviteTokenSerializer(serializers.ModelSerializer):
             'group',
             'created_by',
             'token',
+            'code',
+            'share_url',
             'created_at',
             'expires_at',
             'max_uses',
@@ -101,6 +105,41 @@ class GroupInviteTokenSerializer(serializers.ModelSerializer):
             'revoked'
         ]
         read_only_fields = fields
+
+    def get_share_url(self, obj):
+        base = settings.INVITE_LANDING_BASE_URL
+        return f"{base}/invite/{obj.code}/" if base else None
+
+
+class InvitePreviewSerializer(serializers.ModelSerializer):
+    group = InvitationGroupSerializer(read_only=True)
+    invited_by = PublicUserSerializer(source='created_by', read_only=True)
+    valid = serializers.SerializerMethodField()
+    reason = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GroupInviteToken
+        fields = [
+            'group',
+            'invited_by',
+            'code',
+            'expires_at',
+            'valid',
+            'reason',
+        ]
+        read_only_fields = fields
+
+    def get_reason(self, obj):
+        if obj.revoked:
+            return errors.INVITE_TOKEN_REVOKED
+        if obj.is_expired:
+            return errors.INVITE_TOKEN_EXPIRED
+        if obj.is_exhausted:
+            return errors.INVITE_TOKEN_EXHAUSTED
+        return None
+
+    def get_valid(self, obj):
+        return self.get_reason(obj) is None
 
 
 class MessageSerializer(serializers.ModelSerializer):

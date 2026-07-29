@@ -7,6 +7,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from core import errors, storage
 from core.errors import error_response
+from groups import invites
 from core.throttling import (
     LoginAccountThrottle,
     LoginIPThrottle,
@@ -63,9 +64,14 @@ class UserViewSet(viewsets.ViewSet):
         seriailizer = UserRegisterSerializer(data = request.data)
         seriailizer.is_valid(raise_exception=True)
 
+        raw_invite = request.data.get('invite_token') or request.data.get('invite_code')
+
         try:
             with transaction.atomic():
                 user = seriailizer.save()
+                joined, invite_failure = (
+                    invites.redeem(raw_invite, user) if raw_invite else (None, None)
+                )
         except IntegrityError:
             return error_response(
                 errors.EMAIL_TAKEN,
@@ -73,12 +79,19 @@ class UserViewSet(viewsets.ViewSet):
                 status.HTTP_400_BAD_REQUEST
             )
 
-        return Response({
+        body = {
             'message':'User created successfully',
             'user':UserSeriailizer(user).data,
-            },
-            status=status.HTTP_201_CREATED
-            )
+        }
+
+        if raw_invite:
+            body['invite'] = {
+                'joined': joined is not None,
+                'group': {'id': joined.id, 'name': joined.name} if joined else None,
+                'code': invite_failure,
+            }
+
+        return Response(body, status=status.HTTP_201_CREATED)
 
 
 

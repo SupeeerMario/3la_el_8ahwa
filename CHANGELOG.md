@@ -5,6 +5,35 @@ or status code of an existing response and require a client change.
 
 Dates are the day the change landed on `main`.
 
+## Unreleased — Phase 5.5, the invite journey
+
+Nothing here is breaking. Every addition is additive; the 43-character invite
+token and every existing route behave exactly as before.
+
+- **Every invite token now carries an eight-character `code`** from
+  `23456789ABCDEFGHJKMNPQRSTVWXYZ` — no `0`/`O`, no `1`/`I`/`L`, no `U`.
+  Existing tokens were backfilled. `code` and `share_url` appear on invite
+  token payloads.
+- **`POST /groups/join/` accepts `code` as well as `token`**, case-insensitively
+  for the code. **Now throttled at 10/hour per user** (`THROTTLE_JOIN_GROUP`) —
+  an eight-character code is guessable in a way a 43-character token is not.
+- **`GET /groups/invite/<code>/` is a new unauthenticated preview.** Returns the
+  group name, member count, image and the inviter's public identity so a
+  landing screen can name the group before the visitor has an account. A token
+  that exists but is expired, revoked or exhausted returns `200` with
+  `"valid": false` and a `reason`; only an unknown code is `404`. Never returns
+  the long token, an email or a member list. Throttled 30/hour per IP
+  (`THROTTLE_INVITE_PREVIEW`).
+- **`POST /users/register/` accepts an optional `invite_token`** (or
+  `invite_code`) and joins the group in the same transaction as the account
+  creation. The response gains an `invite` block only when one was supplied. A
+  bad invite never fails the registration.
+- **`GET /invite/<code>/` serves an HTML landing page** — the first HTML this
+  backend returns. Group name, inviter, an "open in the app" deep link, the
+  code in large type and store buttons. Its public origin is unset until there
+  is a deployed host, so `share_url` is `null` until `INVITE_LANDING_BASE_URL`
+  is configured.
+
 ## Unreleased — Phase 5, security & correctness
 
 - **BREAKING — `POST /groups/invitations/send_invite/` answers `404
