@@ -344,6 +344,15 @@ class PasswordResetTests(APITestCase):
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn("uid=", mail.outbox[0].body)
 
+    def test_a_failed_send_is_logged_but_still_answers_200(self):
+        with patch("users.views.send_mail", side_effect=Exception("550 refused")):
+            with self.assertLogs("users.views", level="ERROR") as captured:
+                resp = self._request_reset()
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIn("550 refused", "\n".join(captured.output))
+        self.assertNotIn("reset@example.com", "\n".join(captured.output))
+
     def test_reset_request_for_an_unknown_address_looks_identical(self):
         from django.core import mail
 
