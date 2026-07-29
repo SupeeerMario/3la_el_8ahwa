@@ -21,7 +21,7 @@ from django.utils import timezone
 from core import errors, storage
 from core.errors import error_response
 from core.permissions import IsGroupAdmin
-from core.throttling import GroupMessagesThrottle
+from core.throttling import GroupMessagesThrottle, SendInviteThrottle
 from . import cursors, room
 from notifications.services import notify, notify_group
 # Create your views here.
@@ -40,6 +40,21 @@ def _as_int(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _reassign_creator(group, departing_user_id):
+    if group.created_by_id != departing_user_id:
+        return None
+
+    remaining = GroupMember.objects.filter(group=group).exclude(user_id=departing_user_id)
+    successor = (
+        remaining.filter(role="admin").order_by("joined_at", "id").first()
+        or remaining.order_by("joined_at", "id").first()
+    )
+
+    group.created_by = successor.user if successor else None
+    group.save(update_fields=["created_by"])
+    return group.created_by
 
 
 class GroupsViewSet(ModelViewSet):
@@ -131,10 +146,15 @@ class GroupsViewSet(ModelViewSet):
 
             room.member_left(group, current_user)
 
+            new_admin = None
             if was_admin and not remaining.filter(role="admin").exists():
                 new_admin = remaining.order_by("-joined_at", "-id").first()
                 new_admin.role = "admin"
                 new_admin.save(update_fields=["role"])
+
+            _reassign_creator(group, current_user.id)
+
+            if new_admin is not None:
                 return Response(
                     {'message': f'You have left {group.name}; admin transferred to {new_admin.user}'},
                     status=status.HTTP_200_OK
@@ -217,6 +237,8 @@ class GroupsViewSet(ModelViewSet):
             )
 
         membership.delete()
+
+        _reassign_creator(group, user_id)
 
         return Response(
             {'message': 'Member removed from the group'},
@@ -623,7 +645,8 @@ class GroupInvitationViewSet(ReadOnlyModelViewSet):
     @action(
         detail=False,
         methods=['POST'],
-        permission_classes = [IsAuthenticated]
+        permission_classes = [IsAuthenticated],
+        throttle_classes = [SendInviteThrottle]
     )
     def send_invite(self, request):
         current_user = request.user
@@ -638,7 +661,7 @@ class GroupInvitationViewSet(ReadOnlyModelViewSet):
             )
 
         try:
-            group = Group.objects.get(id = group_id)
+            group = Group.objects.get(id = group_id, members__user = current_user)
         except Group.DoesNotExist:
             return error_response(
                 errors.GROUP_NOT_FOUND,

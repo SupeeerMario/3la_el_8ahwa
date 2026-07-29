@@ -196,6 +196,66 @@ class GroupLeaveTests(APITestCase):
         resp = self.client.delete(f"/groups/{self.group.id}/leave_group/")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_creator_leaving_reassigns_created_by_to_the_new_admin(self):
+        member = User.objects.create_user(username="successorL", password="pw12345678")
+        GroupMember.objects.create(group=self.group, user=member, role="member")
+
+        self.client.force_authenticate(self.admin)
+        resp = self.client.delete(f"/groups/{self.group.id}/leave_group/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.created_by, member)
+
+    def test_creator_leaving_prefers_an_existing_admin(self):
+        other_admin = User.objects.create_user(username="otherAdminL", password="pw12345678")
+        plain = User.objects.create_user(username="plainL", password="pw12345678")
+        GroupMember.objects.create(group=self.group, user=other_admin, role="admin")
+        GroupMember.objects.create(group=self.group, user=plain, role="member")
+
+        self.client.force_authenticate(self.admin)
+        resp = self.client.delete(f"/groups/{self.group.id}/leave_group/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.created_by, other_admin)
+
+    def test_non_creator_leaving_does_not_touch_created_by(self):
+        member = User.objects.create_user(username="bystanderL", password="pw12345678")
+        GroupMember.objects.create(group=self.group, user=member, role="member")
+
+        self.client.force_authenticate(member)
+        resp = self.client.delete(f"/groups/{self.group.id}/leave_group/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.created_by, self.admin)
+
+    def test_removing_the_creator_reassigns_created_by(self):
+        other_admin = User.objects.create_user(username="removerL", password="pw12345678")
+        GroupMember.objects.create(group=self.group, user=other_admin, role="admin")
+
+        self.client.force_authenticate(other_admin)
+        resp = self.client.post(
+            f"/groups/{self.group.id}/remove_member/", {"user_id": self.admin.id},
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.created_by, other_admin)
+
+    def test_deleting_the_creators_account_keeps_the_group(self):
+        member = User.objects.create_user(username="survivorL", password="pw12345678")
+        GroupMember.objects.create(group=self.group, user=member, role="member")
+
+        self.admin.delete()
+
+        self.group.refresh_from_db()
+        self.assertIsNone(self.group.created_by)
+        self.assertTrue(
+            GroupMember.objects.filter(group=self.group, user=member).exists()
+        )
+
 
 class GroupInvitationTests(APITestCase):
     """Covers the full invitation flow on GroupInvitationViewSet."""
@@ -233,6 +293,39 @@ class GroupInvitationTests(APITestCase):
             "username_to_invite": self.invitee.username,
         })
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_non_member_gets_404_not_403(self):
+        stranger = User.objects.create_user(username="strangerI", password="pw12345678")
+        self.client.force_authenticate(stranger)
+        resp = self.client.post(f"{self.INVITES}/send_invite/", {
+            "group_id": self.group.id,
+            "username_to_invite": self.invitee.username,
+        })
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(resp.data["code"], "group_not_found")
+
+    def test_send_invite_is_throttled(self):
+        from django.core.cache import cache
+        from core.throttling import SendInviteThrottle
+
+        cache.clear()
+        self.client.force_authenticate(self.admin)
+        targets = [
+            User.objects.create_user(username=f"targetI{i}", password="pw12345678")
+            for i in range(4)
+        ]
+
+        with patch.object(SendInviteThrottle, "THROTTLE_RATES", {"send_invite": "3/hour"}):
+            codes = [
+                self.client.post(f"{self.INVITES}/send_invite/", {
+                    "group_id": self.group.id,
+                    "username_to_invite": target.username,
+                }).status_code
+                for target in targets
+            ]
+
+        self.assertEqual(codes[:3], [status.HTTP_201_CREATED] * 3)
+        self.assertEqual(codes[3], status.HTTP_429_TOO_MANY_REQUESTS)
 
     def test_invite_unknown_user_returns_404(self):
         self.client.force_authenticate(self.admin)
